@@ -2,7 +2,8 @@ import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { resolveFfmpegPath } from './FfmpegLocator'
 import { logger } from './Logger'
-import type { CameraDevice } from '@shared/types'
+import { resolveStationCameraId } from '@shared/types'
+import type { CameraDevice, StationConfig } from '@shared/types'
 
 const POLL_INTERVAL_MS = 5000
 
@@ -52,8 +53,8 @@ class CameraManager extends EventEmitter {
   async refresh(): Promise<{ video: CameraDevice[]; audio: string[] }> {
     const result = await this.runDshowListing()
     const changed =
-      JSON.stringify(result.video.map((d) => d.name).sort()) !==
-        JSON.stringify(this.lastVideoDevices.map((d) => d.name).sort()) ||
+      JSON.stringify(result.video.map((d) => d.id).sort()) !==
+        JSON.stringify(this.lastVideoDevices.map((d) => d.id).sort()) ||
       JSON.stringify(result.audio.sort()) !== JSON.stringify(this.lastAudioDevices.sort())
 
     this.lastVideoDevices = result.video
@@ -69,8 +70,20 @@ class CameraManager extends EventEmitter {
     return result
   }
 
-  isDeviceConnected(name: string): boolean {
-    return this.lastVideoDevices.some((d) => d.name === name)
+  getLastKnownDevices(): CameraDevice[] {
+    return this.lastVideoDevices
+  }
+
+  /** Resolves a station's configured camera against the most recently
+   *  polled device list - id-first, name-fallback (see resolveStationCameraId) -
+   *  and reports whether that specific physical device is currently present.
+   *  This is the one place recording, connected-status, and display-name
+   *  resolution all funnel through, so they can never disagree with each
+   *  other about which physical camera a station means. */
+  resolveStationCamera(station: Pick<StationConfig, 'cameraId' | 'cameraName'>): CameraDevice | null {
+    const id = resolveStationCameraId(station, this.lastVideoDevices)
+    if (!id) return null
+    return this.lastVideoDevices.find((d) => d.id === id) ?? null
   }
 
   startPolling(): void {
@@ -105,13 +118,30 @@ function parseDshowOutput(stderr: string): { video: CameraDevice[]; audio: strin
       section = 'audio'
       continue
     }
-    if (line.includes('Alternative name')) continue
+
+    if (line.includes('Alternative name')) {
+      // Belongs to whichever device was just listed above it - this is the
+      // one piece of ffmpeg's output that's actually unique per physical
+      // device (two identical camera models still get two different
+      // alternative-name paths), so it becomes that device's `id`. Only
+      // video devices need a unique id here; audio device selection isn't
+      // part of this fix.
+      if (section === 'video' && video.length > 0) {
+        const altMatch = line.match(/"([^"]+)"/)
+        if (altMatch) video[video.length - 1].id = altMatch[1]
+      }
+      continue
+    }
 
     const match = line.match(/"([^"]+)"/)
     if (!match) continue
 
     if (section === 'video') {
-      video.push({ name: match[1], index: videoIndex++, connected: true })
+      // `id` defaults to the friendly name and is overwritten by the
+      // "Alternative name" line immediately below (handled above) when
+      // ffmpeg's driver reports one - a driver that doesn't keeps working
+      // exactly as before, just without duplicate-name disambiguation.
+      video.push({ id: match[1], name: match[1], index: videoIndex++, connected: true })
     } else if (section === 'audio') {
       audio.push(match[1])
     }

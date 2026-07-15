@@ -1,13 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { RESOLUTION_PRESETS } from '../../electron/shared/types'
+import { RESOLUTION_PRESETS, buildCameraDisplayNames } from '../../electron/shared/types'
 import { UpdatePanel } from '../components/common/UpdatePanel'
 import { OverlayPreview } from '../components/common/OverlayPreview'
 import { GlassPanel } from '../components/common/GlassPanel'
 import { AnimatedButton } from '../components/common/AnimatedButton'
 import { AnimatedDialog } from '../components/common/AnimatedDialog'
 import { Toggle } from '../components/common/Toggle'
+import { TestCameraModal } from '../components/pairing/TestCameraModal'
 import { useUpdateState } from '../hooks/useUpdateState'
+import { useCameraDevices } from '../hooks/useCameraDevices'
 import { formatBytes } from '../lib/format'
 import { strings } from '../lib/strings'
 import type {
@@ -28,8 +30,8 @@ let stationCounter = 0
 const T = strings.settings
 
 export function SettingsPage({ config, onConfigChanged }: Props): JSX.Element {
-  const [cameras, setCameras] = useState<CameraDevice[]>([])
-  const [mics, setMics] = useState<string[]>([])
+  const { cameras, mics } = useCameraDevices()
+  const [testCamera, setTestCamera] = useState<CameraDevice | null>(null)
   const [draft, setDraft] = useState<AppConfig>(config)
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle')
   const [backupMessage, setBackupMessage] = useState<string | null>(null)
@@ -62,21 +64,6 @@ export function SettingsPage({ config, onConfigChanged }: Props): JSX.Element {
     }, 400)
     return () => window.clearTimeout(timer)
   }, [saveLocationInput])
-
-  useEffect(() => {
-    refreshCameras()
-    const off = window.electronAPI.cameras.onListChanged(({ video, audio }) => {
-      setCameras(video)
-      setMics(audio)
-    })
-    return off
-  }, [])
-
-  async function refreshCameras(): Promise<void> {
-    const { video, audio } = await window.electronAPI.cameras.list()
-    setCameras(video)
-    setMics(audio)
-  }
 
   async function persist(next: AppConfig): Promise<void> {
     setDraft(next)
@@ -111,6 +98,7 @@ export function SettingsPage({ config, onConfigChanged }: Props): JSX.Element {
       id: `station-${Date.now()}-${stationCounter}`,
       name: T.stationNumber(draft.stations.length + 1),
       enabled: true,
+      cameraId: null,
       cameraName: null,
       micName: null,
       resolutionPreset: '1080p',
@@ -198,6 +186,8 @@ export function SettingsPage({ config, onConfigChanged }: Props): JSX.Element {
     setBackupMessage(T.backupCreated(dest))
     window.setTimeout(() => setBackupMessage(null), 5000)
   }
+
+  const cameraDisplayNames = useMemo(() => buildCameraDisplayNames(cameras), [cameras])
 
   return (
     <div className="flex-1 overflow-auto p-6 space-y-6">
@@ -306,6 +296,7 @@ export function SettingsPage({ config, onConfigChanged }: Props): JSX.Element {
                 key={station.id}
                 station={station}
                 cameras={cameras}
+                cameraDisplayNames={cameraDisplayNames}
                 mics={mics}
                 onChange={(partial) => updateStation(station.id, partial)}
                 onRemove={() => removeStation(station.id)}
@@ -315,6 +306,42 @@ export function SettingsPage({ config, onConfigChanged }: Props): JSX.Element {
               />
             ))}
           </AnimatePresence>
+        </div>
+      </Section>
+
+      <Section title={T.sectionCameraDiagnostics}>
+        <p className="text-sm text-slate-400 mb-4">{T.cameraDiagnosticsBody}</p>
+        <div className="space-y-3">
+          {cameras.length === 0 && (
+            <p className="text-sm text-slate-600 text-center py-6">{T.noCamerasDetectedDiagnostics}</p>
+          )}
+          {cameras.map((camera) => {
+            const owner = draft.stations.find((s) => s.cameraId === camera.id || (!s.cameraId && s.cameraName === camera.name))
+            return (
+              <div
+                key={camera.id}
+                className="flex items-center justify-between gap-4 border border-white/10 rounded-lg px-4 py-3 bg-surface-850/30 flex-wrap"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-slate-100">{cameraDisplayNames.get(camera.id) ?? camera.name}</p>
+                  <p className="text-xs text-slate-500 font-mono mt-0.5 break-all">
+                    {T.cameraUniqueId}: {camera.id}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    {owner
+                      ? T.cameraUsedBy(owner.name, owner.resolutionPreset, owner.fps)
+                      : T.cameraNotAssignedToStation}
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="text-ok-500 text-sm">{strings.common.connected}</span>
+                  <AnimatedButton size="sm" onClick={() => setTestCamera(camera)}>
+                    {strings.devicePairing.testCamera}
+                  </AnimatedButton>
+                </div>
+              </div>
+            )
+          })}
         </div>
       </Section>
 
@@ -429,6 +456,17 @@ export function SettingsPage({ config, onConfigChanged }: Props): JSX.Element {
           ))}
         </div>
       </Section>
+
+      <AnimatePresence>
+        {testCamera && (
+          <TestCameraModal
+            key="test-camera"
+            camera={testCamera}
+            cameras={cameras}
+            onClose={() => setTestCamera(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   )
 }
@@ -436,6 +474,7 @@ export function SettingsPage({ config, onConfigChanged }: Props): JSX.Element {
 function StationSettingsCard({
   station,
   cameras,
+  cameraDisplayNames,
   mics,
   onChange,
   onRemove,
@@ -445,6 +484,7 @@ function StationSettingsCard({
 }: {
   station: StationConfig
   cameras: CameraDevice[]
+  cameraDisplayNames: Map<string, string>
   mics: string[]
   onChange: (partial: Partial<StationConfig>) => void
   onRemove: () => void
@@ -506,14 +546,18 @@ function StationSettingsCard({
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Field label={strings.stationCard.camera}>
           <select
-            value={station.cameraName ?? ''}
-            onChange={(e) => onChange({ cameraName: e.target.value || null })}
+            value={station.cameraId ?? ''}
+            onChange={(e) => {
+              const id = e.target.value || null
+              const camera = cameras.find((c) => c.id === id)
+              onChange({ cameraId: id, cameraName: camera?.name ?? null })
+            }}
             className="w-full bg-surface-800/60 border border-white/10 rounded-lg px-2 py-1.5 text-sm"
           >
             <option value="">{strings.common.notAssigned}</option>
             {cameras.map((c) => (
-              <option key={c.name} value={c.name}>
-                {c.name}
+              <option key={c.id} value={c.id}>
+                {cameraDisplayNames.get(c.id) ?? c.name}
               </option>
             ))}
           </select>

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { formatHms } from '../../electron/shared/types'
+import { strings } from '../lib/strings'
 import type { StationConfig, StationRuntimeState, OverlayFieldData } from '../../electron/shared/types'
 
 function pad(n: number): string {
@@ -39,6 +40,9 @@ export function useOverlayFieldData(
     time: formatTimeLocal(now),
     timer: recording ? formatHms(state!.elapsedSeconds) : SAMPLE_TIMER,
     station: station.name,
-    camera: station.cameraName ?? 'Not assigned'
+    // state.cameraName is resolved main-process side (StationManager) and
+    // already disambiguated ("Camera Name (2)") when two connected cameras
+    // share a friendly name - prefer it over the station's raw config field.
+    camera: state?.cameraName ?? station.cameraName ?? strings.common.notAssigned
   }
 }

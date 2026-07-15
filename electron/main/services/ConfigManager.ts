@@ -129,6 +129,7 @@ function normalizeStation(station: Partial<StationConfig> & { id: string; name: 
   return {
     ...station,
     enabled: station.enabled ?? true,
+    cameraId: station.cameraId ?? null,
     cameraName: station.cameraName ?? null,
     micName: station.micName ?? null,
     resolutionPreset: station.resolutionPreset ?? '1080p',

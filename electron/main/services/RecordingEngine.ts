@@ -33,13 +33,11 @@ class RecordingEngine extends EventEmitter {
 
   async start(
     station: StationConfig,
+    cameraDeviceId: string,
     barcode: string,
     saveLocation: string,
     overlay: { config: OverlayConfig; textFilePath: string } | null
   ): Promise<StartResult> {
-    if (!station.cameraName) {
-      throw new Error(`Station "${station.name}" has no camera assigned`)
-    }
     if (this.active.has(station.id)) {
       throw new Error(`Station "${station.name}" is already recording`)
     }
@@ -51,7 +49,7 @@ class RecordingEngine extends EventEmitter {
     const resolution = RESOLUTION_PRESETS[station.resolutionPreset]
     const ffmpegPath = resolveFfmpegPath()
     const args = buildRecordArgs({
-      cameraName: station.cameraName,
+      cameraDeviceId,
       micName: station.micName,
       width: resolution.width,
       height: resolution.height,
@@ -175,7 +173,11 @@ class RecordingEngine extends EventEmitter {
 }
 
 function buildRecordArgs(input: {
-  cameraName: string
+  /** Either the DirectShow "Alternative name" device path (unambiguous even
+   *  when two cameras share a friendly name) or, for a driver that doesn't
+   *  report one, the friendly name itself - see CameraManager. ffmpeg's
+   *  dshow input accepts both forms identically as `video=<value>`. */
+  cameraDeviceId: string
   micName: string | null
   width: number
   height: number
@@ -184,7 +186,9 @@ function buildRecordArgs(input: {
   outputPath: string
   overlay: { config: OverlayConfig; textFilePath: string } | null
 }): string[] {
-  const deviceSpec = input.micName ? `video=${input.cameraName}:audio=${input.micName}` : `video=${input.cameraName}`
+  const deviceSpec = input.micName
+    ? `video=${input.cameraDeviceId}:audio=${input.micName}`
+    : `video=${input.cameraDeviceId}`
 
   const args = [
     '-hide_banner',

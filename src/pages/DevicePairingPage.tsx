@@ -5,6 +5,8 @@ import { GlassPanel } from '../components/common/GlassPanel'
 import { AnimatedButton } from '../components/common/AnimatedButton'
 import { useBarcodeListener } from '../hooks/useBarcodeListener'
 import { useRawInputDevice } from '../hooks/useRawInputDevice'
+import { useCameraDevices } from '../hooks/useCameraDevices'
+import { buildCameraDisplayNames, resolveStationCameraId } from '../../electron/shared/types'
 import { strings } from '../lib/strings'
 import type { AppConfig, CameraDevice, IdentifiedScanner, ScannerDevice } from '../../electron/shared/types'
 
@@ -18,8 +20,8 @@ const T = strings.devicePairing
 
 export function DevicePairingPage({ config, onConfigChanged }: Props): JSX.Element {
   const [rawScanners, setRawScanners] = useState<ScannerDevice[]>([])
-  const [cameras, setCameras] = useState<CameraDevice[]>([])
-  const [testCamera, setTestCamera] = useState<string | null>(null)
+  const { cameras } = useCameraDevices()
+  const [testCamera, setTestCamera] = useState<CameraDevice | null>(null)
 
   const [identifying, setIdentifying] = useState(false)
   const [identifyError, setIdentifyError] = useState<string | null>(null)
@@ -29,16 +31,12 @@ export function DevicePairingPage({ config, onConfigChanged }: Props): JSX.Eleme
   const [advancedId, setAdvancedId] = useState<string | null>(null)
 
   const getLastRawInputDevice = useRawInputDevice()
+  const cameraDisplayNames = useMemo(() => buildCameraDisplayNames(cameras), [cameras])
 
   useEffect(() => {
     refreshScanners()
-    refreshCameras()
     const offScanners = window.electronAPI.scanners.onListChanged(setRawScanners)
-    const offCameras = window.electronAPI.cameras.onListChanged(({ video }) => setCameras(video))
-    return () => {
-      offScanners()
-      offCameras()
-    }
+    return offScanners
   }, [])
 
   useEffect(() => {
@@ -52,11 +50,6 @@ export function DevicePairingPage({ config, onConfigChanged }: Props): JSX.Eleme
 
   async function refreshScanners(): Promise<void> {
     setRawScanners(await window.electronAPI.scanners.list())
-  }
-
-  async function refreshCameras(): Promise<void> {
-    const { video } = await window.electronAPI.cameras.list()
-    setCameras(video)
   }
 
   // Only active while "identifying" - this page otherwise never intercepts
@@ -245,7 +238,15 @@ export function DevicePairingPage({ config, onConfigChanged }: Props): JSX.Eleme
                       </select>
                     </label>
 
-                    <span className="text-sm text-slate-500">{T.camera(station?.cameraName ?? strings.common.none)}</span>
+                    <span className="text-sm text-slate-500">
+                      {T.camera(
+                        station
+                          ? (cameraDisplayNames.get(resolveStationCameraId(station, cameras) ?? '') ??
+                              station.cameraName ??
+                              strings.common.none)
+                          : strings.common.none
+                      )}
+                    </span>
 
                     <button
                       onClick={() => setAdvancedId(advancedId === scanner.id ? null : scanner.id)}
@@ -289,15 +290,15 @@ export function DevicePairingPage({ config, onConfigChanged }: Props): JSX.Eleme
             </thead>
             <tbody>
               {cameras.map((camera) => (
-                <tr key={camera.name} className="border-t border-white/5">
-                  <td className="px-3 py-2 text-slate-200">{camera.name}</td>
+                <tr key={camera.id} className="border-t border-white/5">
+                  <td className="px-3 py-2 text-slate-200">{cameraDisplayNames.get(camera.id) ?? camera.name}</td>
                   <td className="px-3 py-2">
                     <span className={camera.connected ? 'text-ok-500' : 'text-rec-500'}>
                       {camera.connected ? strings.common.connected : strings.common.disconnected}
                     </span>
                   </td>
                   <td className="px-3 py-2">
-                    <AnimatedButton size="sm" onClick={() => setTestCamera(camera.name)}>
+                    <AnimatedButton size="sm" onClick={() => setTestCamera(camera)}>
                       {T.testCamera}
                     </AnimatedButton>
                   </td>
@@ -316,7 +317,9 @@ export function DevicePairingPage({ config, onConfigChanged }: Props): JSX.Eleme
       </Section>
 
       <AnimatePresence>
-        {testCamera && <TestCameraModal key="test-camera" cameraName={testCamera} onClose={() => setTestCamera(null)} />}
+        {testCamera && (
+          <TestCameraModal key="test-camera" camera={testCamera} cameras={cameras} onClose={() => setTestCamera(null)} />
+        )}
       </AnimatePresence>
     </div>
   )

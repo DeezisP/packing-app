@@ -6,12 +6,14 @@ import { RecordingStatus } from '../common/RecordingStatus'
 import { useOverlayFieldData } from '../../hooks/useOverlayFieldData'
 import { OverlayPreview } from '../common/OverlayPreview'
 import { strings } from '../../lib/strings'
-import type { StationConfig, StationRuntimeState, OverlayConfig } from '../../../electron/shared/types'
+import { resolveStationCameraId } from '../../../electron/shared/types'
+import type { StationConfig, StationRuntimeState, OverlayConfig, CameraDevice } from '../../../electron/shared/types'
 
 interface Props {
   station: StationConfig
   state: StationRuntimeState | undefined
   overlayConfig: OverlayConfig
+  cameras: CameraDevice[]
   isActive: boolean
   hotkey: number
   onSetActive: () => void
@@ -21,9 +23,12 @@ interface Props {
  *  preview), scanner/camera pairing status, and the current barcode/timer.
  *  Dashboard renders one of these per entry in config.stations - nothing
  *  here assumes a fixed station count or a specific station id. */
-function StationCardImpl({ station, state, overlayConfig, isActive, hotkey, onSetActive }: Props): JSX.Element {
+function StationCardImpl({ station, state, overlayConfig, cameras, isActive, hotkey, onSetActive }: Props): JSX.Element {
   const overlayData = useOverlayFieldData(station, state)
   const status = state?.status ?? 'idle'
+  const hasCameraConfigured = Boolean(station.cameraId || station.cameraName)
+  const resolvedCameraId = resolveStationCameraId(station, cameras)
+  const cameraDisplayName = state?.cameraName ?? station.cameraName ?? strings.common.notAssigned
 
   return (
     <GlassPanel
@@ -50,10 +55,12 @@ function StationCardImpl({ station, state, overlayConfig, isActive, hotkey, onSe
       </div>
 
       <CameraPreview
-        cameraName={station.cameraName}
-        overlay={station.cameraName ? <OverlayPreview config={overlayConfig} data={overlayData} /> : undefined}
+        cameraId={resolvedCameraId}
+        cameras={cameras}
+        configured={hasCameraConfigured}
+        overlay={hasCameraConfigured ? <OverlayPreview config={overlayConfig} data={overlayData} /> : undefined}
       >
-        {state && !state.cameraConnected && station.cameraName && (
+        {state && !state.cameraConnected && hasCameraConfigured && (
           <div className="absolute top-2 left-2 bg-rec-600/90 text-white text-xs px-2 py-1 rounded-full">
             {strings.stationCard.cameraDisconnected}
           </div>
@@ -64,7 +71,7 @@ function StationCardImpl({ station, state, overlayConfig, isActive, hotkey, onSe
       <div className="p-4 space-y-2">
         <div className="flex items-center justify-between text-sm">
           <span className="text-slate-500">{strings.stationCard.camera}</span>
-          <span className="text-slate-300 truncate max-w-[60%]">{station.cameraName ?? strings.common.notAssigned}</span>
+          <span className="text-slate-300 truncate max-w-[60%]">{cameraDisplayName}</span>
         </div>
         <DeviceStatus
           label={strings.stationCard.scanner}

@@ -11,13 +11,12 @@ import { writeRecordingMetadata } from './MetadataService'
 import { getDiskUsage, CRITICAL_DISK_STOP_BYTES } from './DiskMonitor'
 import { validateSaveLocation } from './SaveLocationValidator'
 import { logger } from './Logger'
-import { RESOLUTION_PRESETS } from '@shared/types'
+import { RESOLUTION_PRESETS, buildCameraDisplayNames } from '@shared/types'
 import type {
   StationRuntimeState,
   WrongBarcodeEvent,
   DuplicateBarcodeEvent,
   StationConfig,
-  CameraDevice,
   ScannerDevice,
   SaveLocationStatus
 } from '@shared/types'
@@ -49,7 +48,7 @@ class StationManager extends EventEmitter {
         stationId: station.id,
         status: 'idle',
         barcode: null,
-        cameraName: station.cameraName,
+        cameraName: resolveCameraDisplay(station).name,
         cameraConnected: false,
         scannerName: scanner.name,
         scannerConnected: scanner.connected,
@@ -69,16 +68,22 @@ class StationManager extends EventEmitter {
       logger.error('Recording stopped unexpectedly', { stationId, message })
     })
 
-    cameraManager.on('changed', ({ video }: { video: CameraDevice[] }) => {
-      const connectedNames = new Set(video.map((d) => d.name))
+    // Ignore the event payload and re-resolve from cameraManager's own
+    // current list instead - it's already updated by the time this fires,
+    // and resolving per-station (id-first, name-fallback) is what correctly
+    // distinguishes two identically-named cameras instead of a shared
+    // name -> connected Set that can't tell them apart.
+    cameraManager.on('changed', () => {
       for (const [stationId, state] of this.states) {
-        const connected = state.cameraName ? connectedNames.has(state.cameraName) : false
-        if (connected !== state.cameraConnected) {
-          this.setState(stationId, { cameraConnected: connected })
-          if (connected) {
-            logger.info('Camera reconnected', { stationId, camera: state.cameraName })
+        const station = this.getStationConfig(stationId)
+        if (!station) continue
+        const display = resolveCameraDisplay(station)
+        if (display.connected !== state.cameraConnected || display.name !== state.cameraName) {
+          this.setState(stationId, { cameraConnected: display.connected, cameraName: display.name })
+          if (display.connected) {
+            logger.info('Camera reconnected', { stationId, camera: display.name })
           } else {
-            logger.warn('Camera disconnected', { stationId, camera: state.cameraName })
+            logger.warn('Camera disconnected', { stationId, camera: display.name })
           }
         }
       }
@@ -151,13 +156,14 @@ class StationManager extends EventEmitter {
 
     for (const station of stations) {
       const scanner = resolveScannerDisplay(station)
+      const camera = resolveCameraDisplay(station)
       if (!this.states.has(station.id)) {
         this.states.set(station.id, {
           stationId: station.id,
           status: 'idle',
           barcode: null,
-          cameraName: station.cameraName,
-          cameraConnected: false,
+          cameraName: camera.name,
+          cameraConnected: camera.connected,
           scannerName: scanner.name,
           scannerConnected: scanner.connected,
           startedAt: null,
@@ -169,7 +175,8 @@ class StationManager extends EventEmitter {
         this.emit('stateChanged', this.publicState(station.id))
       } else {
         this.setState(station.id, {
-          cameraName: station.cameraName,
+          cameraName: camera.name,
+          cameraConnected: camera.connected,
           scannerName: scanner.name,
           scannerConnected: scanner.connected
         })
@@ -314,11 +321,23 @@ class StationManager extends EventEmitter {
     barcode: string,
     saveLocation: string
   ): Promise<void> {
-    if (!station.cameraName) {
+    if (!station.cameraId && !station.cameraName) {
       this.setState(stationId, { status: 'error', lastError: 'No camera assigned to this station' })
       logger.error('Cannot start recording: no camera assigned', { stationId })
       return
     }
+
+    // Resolved by unique device id (falling back to name only for a config
+    // written before cameraId existed) - never by name alone, since two
+    // identical camera models report the exact same friendly name and would
+    // otherwise be indistinguishable here.
+    const camera = cameraManager.resolveStationCamera(station)
+    if (!camera) {
+      this.setState(stationId, { status: 'error', lastError: 'Assigned camera is not connected' })
+      logger.error('Cannot start recording: assigned camera is not connected', { stationId })
+      return
+    }
+    const cameraDisplayName = buildCameraDisplayNames(cameraManager.getLastKnownDevices()).get(camera.id) ?? camera.name
 
     const locationStatus = await validateSaveLocation(saveLocation)
     if (!locationStatus.exists || !locationStatus.writable) {
@@ -343,19 +362,19 @@ class StationManager extends EventEmitter {
           textFilePath: overlayService.start(
             stationId,
             overlayConfig,
-            { barcode, station: station.name, camera: station.cameraName },
+            { barcode, station: station.name, camera: cameraDisplayName },
             startedAt
           )
         }
       : null
 
     try {
-      const result = await recordingEngine.start(station, barcode, saveLocation, overlay)
+      const result = await recordingEngine.start(station, camera.id, barcode, saveLocation, overlay)
       const resolution = RESOLUTION_PRESETS[station.resolutionPreset]
       const dbId = database.insertRecordingStart({
         barcode,
         station: station.name,
-        camera: station.cameraName,
+        camera: cameraDisplayName,
         videoPath: result.videoPath,
         resolution: `${resolution.width}x${resolution.height}`,
         fps: station.fps,
@@ -365,14 +384,14 @@ class StationManager extends EventEmitter {
       this.setState(stationId, {
         status: 'recording',
         barcode,
-        cameraName: station.cameraName,
+        cameraName: cameraDisplayName,
         startedAt: startedAt.toISOString(),
         elapsedSeconds: 0,
         lastError: null,
         dbId,
         videoPath: result.videoPath
       })
-      logger.info('Recording started', { stationId, barcode, camera: station.cameraName })
+      logger.info('Recording started', { stationId, barcode, camera: cameraDisplayName })
     } catch (err) {
       overlayService.stop(stationId)
       const message = (err as Error).message
@@ -434,6 +453,20 @@ class StationManager extends EventEmitter {
     if (this.saveLocationHealthTimer) clearInterval(this.saveLocationHealthTimer)
     recordingEngine.killAll()
   }
+}
+
+/** Resolves a station's camera to a display name and connected status,
+ *  disambiguated ("Camera Name (2)") when two connected cameras share a
+ *  friendly name - see CameraManager.resolveStationCamera and
+ *  buildCameraDisplayNames. Falls back to the raw configured name (with
+ *  connected: false) when nothing currently connected matches, same as
+ *  resolveScannerDisplay does for scanners. */
+function resolveCameraDisplay(station: StationConfig): { id: string | null; name: string | null; connected: boolean } {
+  if (!station.cameraId && !station.cameraName) return { id: null, name: null, connected: false }
+  const device = cameraManager.resolveStationCamera(station)
+  if (!device) return { id: null, name: station.cameraName, connected: false }
+  const displayName = buildCameraDisplayNames(cameraManager.getLastKnownDevices()).get(device.id) ?? device.name
+  return { id: device.id, name: displayName, connected: true }
 }
 
 function resolveScannerDisplay(station: StationConfig): { name: string | null; connected: boolean } {

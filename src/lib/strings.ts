@@ -212,6 +212,15 @@ export const strings = {
     scannerAssignmentBody: (n: number): string =>
       `จับคู่สแกนเนอร์กับสถานีได้จากแท็บ "จับคู่อุปกรณ์" ซึ่งจะระบุสแกนเนอร์ USB แต่ละตัวโดยอัตโนมัติ (ผ่าน Windows Raw Input) และให้เลือกกำหนดได้ผ่านเมนู รวมถึงปุ่มระบุสแกนเนอร์สำหรับกรณีที่มีสแกนเนอร์รุ่นเดียวกันหลายตัว เมื่อจับคู่แล้ว การสแกนจากสแกนเนอร์นั้นจะส่งไปยังสถานีที่กำหนดโดยอัตโนมัติ สถานีที่ไม่มีสแกนเนอร์จับคู่จะยังใช้ตัวเลือกสถานีที่ใช้งานอยู่บนแดชบอร์ดได้ (คลิกที่การ์ด หรือกด 1-${n})`,
 
+    sectionCameraDiagnostics: 'การวินิจฉัยกล้อง',
+    cameraDiagnosticsBody:
+      'รายการกล้องทั้งหมดที่ตรวจพบ พร้อมรหัสเฉพาะที่ระบบใช้แยกแยะกล้องรุ่นเดียวกันหลายตัวภายใน - ใช้หน้านี้เพื่อยืนยันว่ากล้องแต่ละตัวถูกตรวจพบแยกจากกันจริง',
+    cameraUniqueId: 'รหัสเฉพาะ',
+    cameraUsedBy: (station: string, resolution: string, fps: number): string =>
+      `ใช้งานโดย ${station} · ${resolution} @ ${fps}fps`,
+    cameraNotAssignedToStation: 'ยังไม่ได้กำหนดให้สถานีใด',
+    noCamerasDetectedDiagnostics: 'ยังไม่พบกล้องที่เชื่อมต่อ',
+
     folderDoesNotExistTitle: 'ยังไม่มีโฟลเดอร์นี้',
     folderDoesNotExistBody: (path: string): string => `${path} ยังไม่มีอยู่ ต้องการสร้างหรือไม่?`,
     createIt: 'ใช่ สร้างโฟลเดอร์นี้'

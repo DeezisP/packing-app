@@ -1,13 +1,18 @@
 import { motion } from 'framer-motion'
 import { CameraPreview } from '../common/CameraPreview'
+import { buildCameraDisplayNames } from '../../../electron/shared/types'
 import { strings } from '../../lib/strings'
+import type { CameraDevice } from '../../../electron/shared/types'
 
 interface Props {
-  cameraName: string
+  camera: CameraDevice
+  cameras: CameraDevice[]
   onClose: () => void
 }
 
-export function TestCameraModal({ cameraName, onClose }: Props): JSX.Element {
+export function TestCameraModal({ camera, cameras, onClose }: Props): JSX.Element {
+  const displayName = buildCameraDisplayNames(cameras).get(camera.id) ?? camera.name
+
   return (
     <motion.div
       className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-6"
@@ -25,12 +30,12 @@ export function TestCameraModal({ cameraName, onClose }: Props): JSX.Element {
         transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
       >
         <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
-          <span className="text-sm font-semibold text-slate-100">{cameraName}</span>
+          <span className="text-sm font-semibold text-slate-100">{displayName}</span>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-200 text-sm">
             {strings.common.close}
           </button>
         </div>
-        <CameraPreview cameraName={cameraName} />
+        <CameraPreview cameraId={camera.id} cameras={cameras} configured />
       </motion.div>
     </motion.div>
   )

@@ -9,6 +9,7 @@ import { useBarcodeListener } from '../hooks/useBarcodeListener'
 import { useStationsState } from '../hooks/useStationsState'
 import { useUpdateState } from '../hooks/useUpdateState'
 import { useRawInputDevice } from '../hooks/useRawInputDevice'
+import { useCameraDevices } from '../hooks/useCameraDevices'
 import { strings } from '../lib/strings'
 import type { AppConfig } from '../../electron/shared/types'
 
@@ -19,6 +20,7 @@ interface Props {
 
 export function DashboardPage({ config, onConfigChanged }: Props): JSX.Element {
   const { states, wrongBarcode, duplicateBarcode, dismissDuplicateBarcode } = useStationsState()
+  const { cameras } = useCameraDevices()
   const [activeStationId, setActiveStationId] = useState(config.activeStationId)
   const updateState = useUpdateState()
   const [laterForVersion, setLaterForVersion] = useState<string | null>(null)
@@ -117,6 +119,7 @@ export function DashboardPage({ config, onConfigChanged }: Props): JSX.Element {
                   station={station}
                   state={states[station.id]}
                   overlayConfig={config.overlay}
+                  cameras={cameras}
                   isActive={station.id === activeStationId}
                   hotkey={i + 1}
                   onSetActive={() => setActive(station.id)}

@@ -60,6 +60,18 @@ A config upgrading from an older version that has no `enabled`/`saveLocationOver
 normalized on load (`enabled` defaults to `true`, save location defaults to inherit-global), so
 existing stations never disappear or misconfigure themselves after an update.
 
+### Multiple identical cameras
+
+Two USB webcams of the exact same model report the exact same DirectShow friendly name (e.g. two
+"EMEET SmartCam S600" units) - Windows can tell them apart, and so can PackingRecorder, by their
+DirectShow device path instead of that name. Every camera picker (Settings, Device Pairing,
+Dashboard preview) shows duplicates suffixed for clarity - "EMEET SmartCam S600 (1)",
+"EMEET SmartCam S600 (2)" - and internally matches, previews, pairs, and **records** each one by
+its unique device path, never by the shared name, so two identical cameras can be assigned to two
+different stations and record simultaneously without conflict. Settings → **Camera Diagnostics**
+lists every detected camera's unique id and which station (if any) it's assigned to, for
+troubleshooting.
+
 ## Device Pairing
 
 Open the **Device Pairing** tab to identify physical scanners individually and assign each one to
