@@ -39,6 +39,13 @@ module.exports = {
         warn: {
           500: '#f59e0b'
         }
+      },
+      transitionTimingFunction: {
+        apple: 'cubic-bezier(0.16, 1, 0.3, 1)'
+      },
+      borderRadius: {
+        '2xl': '1rem',
+        '3xl': '1.5rem'
       }
     }
   },

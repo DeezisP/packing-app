@@ -3,7 +3,7 @@ import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import { defaultPaths, resolveSaveLocation } from './PathService'
 import { logger } from './Logger'
-import type { AppConfig } from '@shared/types'
+import type { AppConfig, StationConfig } from '@shared/types'
 
 class ConfigManager extends EventEmitter {
   private config: AppConfig
@@ -68,7 +68,8 @@ class ConfigManager extends EventEmitter {
 
   // Shallow-merge so new fields introduced by app updates get sane defaults.
   private mergeWithDefaults(parsed: Partial<AppConfig>, fallback: AppConfig): AppConfig {
-    return { ...fallback, ...parsed, stations: parsed.stations?.length ? parsed.stations : fallback.stations }
+    const stations = parsed.stations?.length ? parsed.stations : fallback.stations
+    return { ...fallback, ...parsed, stations: stations.map(normalizeStation) }
   }
 
   private persist(): void {
@@ -94,6 +95,14 @@ class ConfigManager extends EventEmitter {
     return resolveSaveLocation(this.config.saveLocation)
   }
 
+  /** A station's own save location if it overrides the app-wide one, else the
+   *  same resolved path every other station uses. */
+  getResolvedSaveLocationForStation(station: StationConfig): string {
+    return station.saveLocationOverride
+      ? resolveSaveLocation(station.saveLocationOverride)
+      : this.getResolvedSaveLocation()
+  }
+
   /** Raw (unresolved) default save location shipped in config.default.json -
    *  used by the Settings "Reset to default" action. */
   getDefaultSaveLocation(): string {
@@ -110,6 +119,23 @@ class ConfigManager extends EventEmitter {
 
   ensureDirectories(): void {
     fs.mkdirSync(this.getResolvedSaveLocation(), { recursive: true })
+  }
+}
+
+// Fills in fields added after a config might have already been written to
+// disk, so upgrading never silently hides or misconfigures an existing
+// station (a missing `enabled` must default to true, not false).
+function normalizeStation(station: Partial<StationConfig> & { id: string; name: string }): StationConfig {
+  return {
+    ...station,
+    enabled: station.enabled ?? true,
+    cameraName: station.cameraName ?? null,
+    micName: station.micName ?? null,
+    resolutionPreset: station.resolutionPreset ?? '1080p',
+    fps: station.fps ?? 30,
+    bitrateKbps: station.bitrateKbps ?? 8000,
+    scannerDeviceId: station.scannerDeviceId ?? null,
+    saveLocationOverride: station.saveLocationOverride ?? null
   }
 }
 

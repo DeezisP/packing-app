@@ -24,12 +24,20 @@ export interface CameraDevice {
 export interface StationConfig {
   id: string
   name: string
+  /** Disabled stations are hidden from the Dashboard and never accept scans,
+   *  but stay configured in Settings so they can be re-enabled later.
+   *  Missing on configs written before this field existed - ConfigManager
+   *  normalizes those to `true` on load so upgrades never hide a station. */
+  enabled: boolean
   cameraName: string | null
   micName: string | null
   resolutionPreset: keyof typeof RESOLUTION_PRESETS
   fps: number
   bitrateKbps: number
   scannerDeviceId: string | null
+  /** null = inherit the app-wide save location; otherwise an absolute path
+   *  (or one relative to the portable app root) used only by this station. */
+  saveLocationOverride: string | null
 }
 
 export type ThemeMode = 'dark' | 'light'

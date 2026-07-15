@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
 import { TestCameraModal } from '../components/pairing/TestCameraModal'
+import { GlassPanel } from '../components/common/GlassPanel'
+import { AnimatedButton } from '../components/common/AnimatedButton'
 import { useBarcodeListener } from '../hooks/useBarcodeListener'
 import { useRawInputDevice } from '../hooks/useRawInputDevice'
+import { strings } from '../lib/strings'
 import type { AppConfig, CameraDevice, IdentifiedScanner, ScannerDevice } from '../../electron/shared/types'
 
 interface Props {
@@ -10,6 +14,7 @@ interface Props {
 }
 
 const IDENTIFY_TIMEOUT_MS = 15000
+const T = strings.devicePairing
 
 export function DevicePairingPage({ config, onConfigChanged }: Props): JSX.Element {
   const [rawScanners, setRawScanners] = useState<ScannerDevice[]>([])
@@ -40,7 +45,7 @@ export function DevicePairingPage({ config, onConfigChanged }: Props): JSX.Eleme
     if (!identifying) return
     const timer = window.setTimeout(() => {
       setIdentifying(false)
-      setIdentifyError('No scan detected within 15 seconds. Try again.')
+      setIdentifyError(T.identifyTimeout)
     }, IDENTIFY_TIMEOUT_MS)
     return () => window.clearTimeout(timer)
   }, [identifying])
@@ -61,16 +66,14 @@ export function DevicePairingPage({ config, onConfigChanged }: Props): JSX.Eleme
     const deviceId = getLastRawInputDevice()
     setIdentifying(false)
     if (!deviceId) {
-      setIdentifyError(
-        'Could not detect which physical scanner sent that scan. Raw Input identification may not be supported on this system.'
-      )
+      setIdentifyError(T.rawInputUnavailable)
       return
     }
     const existing = config.identifiedScanners.find((s) => s.id === deviceId)
     const rawMatch = rawScanners.find((s) => s.id === deviceId)
     setPendingIdentify({
       id: deviceId,
-      nameDraft: existing?.name ?? rawMatch?.name ?? `Scanner ${config.identifiedScanners.length + 1}`,
+      nameDraft: existing?.name ?? rawMatch?.name ?? strings.settings.stationNumber(config.identifiedScanners.length + 1),
       isRename: Boolean(existing)
     })
   }, identifying)
@@ -131,179 +134,179 @@ export function DevicePairingPage({ config, onConfigChanged }: Props): JSX.Eleme
     <div className="flex-1 overflow-auto p-6 space-y-6">
       <header className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold text-slate-100">Device Pairing</h1>
-          <p className="text-sm text-slate-500">
-            Identify each physical barcode scanner, give it a name, then assign it to a station. Once
-            paired, scans from that scanner route straight to its station automatically.
-          </p>
+          <h1 className="text-lg font-semibold text-slate-100">{T.title}</h1>
+          <p className="text-sm text-slate-500">{T.subtitle}</p>
         </div>
-        <button
-          onClick={startIdentify}
-          disabled={identifying}
-          className="px-4 py-2 rounded-lg text-sm font-medium bg-accent-600 hover:bg-accent-500 text-white disabled:opacity-50 whitespace-nowrap"
-        >
-          {identifying ? 'Scan a barcode now...' : '+ Identify Scanner'}
-        </button>
+        <AnimatedButton variant="primary" onClick={startIdentify} disabled={identifying}>
+          {identifying ? T.scanningNow : T.identifyScanner}
+        </AnimatedButton>
       </header>
 
-      {identifying && (
-        <div className="bg-accent-600/10 border border-accent-600/40 text-accent-500 text-sm rounded-lg px-4 py-3 flex items-center justify-between">
-          <span>Scan any barcode on the scanner you want to identify. Waiting...</span>
-          <button
-            onClick={() => setIdentifying(false)}
-            className="text-slate-300 hover:text-slate-100 text-xs underline"
+      <AnimatePresence>
+        {identifying && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="bg-accent-600/10 border border-accent-600/40 text-accent-500 text-sm rounded-xl px-4 py-3 flex items-center justify-between overflow-hidden"
           >
-            Cancel
-          </button>
-        </div>
-      )}
-      {identifyError && (
-        <div className="bg-warn-500/10 border border-warn-500/40 text-warn-500 text-sm rounded-lg px-4 py-3">
-          {identifyError}
-        </div>
-      )}
-      {pendingIdentify && (
-        <div className="bg-ok-500/10 border border-ok-500/40 rounded-lg px-4 py-3 flex items-center gap-3">
-          <span className="text-ok-500 text-sm">
-            {pendingIdentify.isRename ? 'Scanner recognized. Update its name:' : 'New scanner identified! Name it:'}
-          </span>
-          <input
-            autoFocus
-            value={pendingIdentify.nameDraft}
-            onChange={(e) => setPendingIdentify({ ...pendingIdentify, nameDraft: e.target.value })}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') confirmIdentify()
-            }}
-            placeholder="e.g. Packing Table 1"
-            className="flex-1 bg-surface-800 border border-surface-600 rounded-lg px-3 py-1.5 text-sm"
-          />
-          <button
-            onClick={confirmIdentify}
-            className="px-3 py-1.5 rounded-lg text-sm bg-ok-500 hover:opacity-90 text-surface-950 font-medium"
+            <span>{T.waitingBanner}</span>
+            <button onClick={() => setIdentifying(false)} className="text-slate-300 hover:text-slate-100 text-xs underline">
+              {strings.common.cancel}
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {identifyError && (
+          <motion.div
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            className="bg-warn-500/10 border border-warn-500/40 text-warn-500 text-sm rounded-xl px-4 py-3"
           >
-            Save
-          </button>
-          <button
-            onClick={() => setPendingIdentify(null)}
-            className="text-slate-400 hover:text-slate-200 text-sm"
+            {identifyError}
+          </motion.div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {pendingIdentify && (
+          <motion.div
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            className="bg-ok-500/10 border border-ok-500/40 rounded-xl px-4 py-3 flex items-center gap-3"
           >
-            Cancel
-          </button>
-        </div>
-      )}
+            <span className="text-ok-500 text-sm">{pendingIdentify.isRename ? T.renamePrompt : T.newScannerPrompt}</span>
+            <input
+              autoFocus
+              value={pendingIdentify.nameDraft}
+              onChange={(e) => setPendingIdentify({ ...pendingIdentify, nameDraft: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') confirmIdentify()
+              }}
+              placeholder={T.namePlaceholder}
+              className="flex-1 bg-surface-800/60 border border-white/10 rounded-lg px-3 py-1.5 text-sm"
+            />
+            <AnimatedButton variant="success" size="sm" onClick={confirmIdentify}>
+              {strings.common.save}
+            </AnimatedButton>
+            <button onClick={() => setPendingIdentify(null)} className="text-slate-400 hover:text-slate-200 text-sm">
+              {strings.common.cancel}
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <section className="space-y-4">
         {config.identifiedScanners.length === 0 && !identifying && (
-          <div className="bg-surface-900 border border-surface-800 rounded-xl p-8 text-center text-slate-500 text-sm">
-            No scanners identified yet. Click <span className="text-slate-300">Identify Scanner</span> above,
-            then scan any barcode on the scanner you want to add.
-          </div>
+          <GlassPanel className="p-8 text-center text-slate-500 text-sm">{T.emptyState}</GlassPanel>
         )}
 
-        {config.identifiedScanners.map((scanner) => {
-          const connected = connectedById.get(scanner.id) ?? false
-          const stationId = stationForScanner(scanner.id)
-          const station = config.stations.find((s) => s.id === stationId)
-          return (
-            <div key={scanner.id} className="bg-surface-900 border border-surface-800 rounded-xl p-5">
-              <div className="flex items-center justify-between flex-wrap gap-4">
-                <div className="flex items-center gap-3">
-                  <span className={`text-lg ${connected ? 'text-ok-500' : 'text-rec-500'}`}>
-                    {connected ? '✓' : '✕'}
-                  </span>
-                  <div>
-                    <input
-                      value={scanner.name}
-                      onChange={(e) => renameScanner(scanner.id, e.target.value)}
-                      className="bg-transparent text-sm font-semibold text-slate-100 border-b border-transparent focus:border-surface-600 outline-none"
-                    />
-                    <div className="text-xs text-slate-500 mt-0.5">
-                      Scanner - <span className={connected ? 'text-ok-500' : 'text-rec-500'}>
-                        {connected ? 'Connected' : 'Disconnected'}
-                      </span>
+        <AnimatePresence initial={false}>
+          {config.identifiedScanners.map((scanner) => {
+            const connected = connectedById.get(scanner.id) ?? false
+            const stationId = stationForScanner(scanner.id)
+            const station = config.stations.find((s) => s.id === stationId)
+            return (
+              <GlassPanel key={scanner.id} layout className="p-5">
+                <div className="flex items-center justify-between flex-wrap gap-4">
+                  <div className="flex items-center gap-3">
+                    <span className={`text-lg ${connected ? 'text-ok-500' : 'text-rec-500'}`}>{connected ? '✓' : '✕'}</span>
+                    <div>
+                      <input
+                        value={scanner.name}
+                        onChange={(e) => renameScanner(scanner.id, e.target.value)}
+                        className="bg-transparent text-sm font-semibold text-slate-100 border-b border-transparent focus:border-white/20 outline-none"
+                      />
+                      <div className="text-xs text-slate-500 mt-0.5">
+                        {T.scannerLabel} -{' '}
+                        <span className={connected ? 'text-ok-500' : 'text-rec-500'}>
+                          {connected ? strings.common.connected : strings.common.disconnected}
+                        </span>
+                      </div>
                     </div>
+                  </div>
+
+                  <div className="flex items-center gap-4">
+                    <label className="flex items-center gap-2 text-sm">
+                      <span className="text-slate-500">{T.station}</span>
+                      <select
+                        value={stationId}
+                        onChange={(e) => assignScannerToStation(scanner.id, e.target.value || null)}
+                        className="bg-surface-800/60 border border-white/10 rounded-lg px-2 py-1.5 text-sm"
+                      >
+                        <option value="">{strings.common.notAssigned}</option>
+                        {config.stations.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <span className="text-sm text-slate-500">{T.camera(station?.cameraName ?? strings.common.none)}</span>
+
+                    <button
+                      onClick={() => setAdvancedId(advancedId === scanner.id ? null : scanner.id)}
+                      className="text-xs text-slate-500 hover:text-slate-300 underline"
+                    >
+                      {T.advanced}
+                    </button>
+                    <button onClick={() => removeScanner(scanner.id)} className="text-xs text-rec-500 hover:text-rec-400">
+                      {strings.common.remove}
+                    </button>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-4">
-                  <label className="flex items-center gap-2 text-sm">
-                    <span className="text-slate-500">Station</span>
-                    <select
-                      value={stationId}
-                      onChange={(e) => assignScannerToStation(scanner.id, e.target.value || null)}
-                      className="bg-surface-800 border border-surface-600 rounded-lg px-2 py-1.5 text-sm"
+                <AnimatePresence>
+                  {advancedId === scanner.id && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="mt-3 pt-3 border-t border-white/10 text-xs text-slate-500 font-mono overflow-hidden"
                     >
-                      <option value="">Not assigned</option>
-                      {config.stations.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <span className="text-sm text-slate-500">
-                    Camera: <span className="text-slate-300">{station?.cameraName ?? 'None'}</span>
-                  </span>
-
-                  <button
-                    onClick={() => setAdvancedId(advancedId === scanner.id ? null : scanner.id)}
-                    className="text-xs text-slate-500 hover:text-slate-300 underline"
-                  >
-                    Advanced
-                  </button>
-                  <button
-                    onClick={() => removeScanner(scanner.id)}
-                    className="text-xs text-rec-500 hover:text-rec-600"
-                  >
-                    Remove
-                  </button>
-                </div>
-              </div>
-
-              {advancedId === scanner.id && (
-                <div className="mt-3 pt-3 border-t border-surface-800 text-xs text-slate-500 font-mono">
-                  Instance ID: {scanner.id}
-                </div>
-              )}
-            </div>
-          )
-        })}
+                      {T.instanceId(scanner.id)}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </GlassPanel>
+            )
+          })}
+        </AnimatePresence>
       </section>
 
-      <Section title="Cameras">
+      <Section title={T.sectionCameras}>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="text-slate-500 text-xs uppercase">
               <tr>
-                <th className="text-left px-3 py-2">Name</th>
-                <th className="text-left px-3 py-2">Status</th>
+                <th className="text-left px-3 py-2">{strings.common.name}</th>
+                <th className="text-left px-3 py-2">{strings.common.status}</th>
                 <th className="text-left px-3 py-2"></th>
               </tr>
             </thead>
             <tbody>
               {cameras.map((camera) => (
-                <tr key={camera.name} className="border-t border-surface-800">
+                <tr key={camera.name} className="border-t border-white/5">
                   <td className="px-3 py-2 text-slate-200">{camera.name}</td>
                   <td className="px-3 py-2">
                     <span className={camera.connected ? 'text-ok-500' : 'text-rec-500'}>
-                      {camera.connected ? 'Connected' : 'Disconnected'}
+                      {camera.connected ? strings.common.connected : strings.common.disconnected}
                     </span>
                   </td>
                   <td className="px-3 py-2">
-                    <button
-                      onClick={() => setTestCamera(camera.name)}
-                      className="px-3 py-1 rounded bg-surface-700 hover:bg-surface-600 text-xs"
-                    >
-                      Test Camera
-                    </button>
+                    <AnimatedButton size="sm" onClick={() => setTestCamera(camera.name)}>
+                      {T.testCamera}
+                    </AnimatedButton>
                   </td>
                 </tr>
               ))}
               {cameras.length === 0 && (
                 <tr>
                   <td colSpan={3} className="px-3 py-8 text-center text-slate-600">
-                    No cameras detected.
+                    {T.noCamerasDetected}
                   </td>
                 </tr>
               )}
@@ -312,16 +315,18 @@ export function DevicePairingPage({ config, onConfigChanged }: Props): JSX.Eleme
         </div>
       </Section>
 
-      {testCamera && <TestCameraModal cameraName={testCamera} onClose={() => setTestCamera(null)} />}
+      <AnimatePresence>
+        {testCamera && <TestCameraModal key="test-camera" cameraName={testCamera} onClose={() => setTestCamera(null)} />}
+      </AnimatePresence>
     </div>
   )
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }): JSX.Element {
   return (
-    <section className="bg-surface-900 border border-surface-800 rounded-xl p-5">
+    <GlassPanel className="p-5">
       <h2 className="text-sm font-semibold text-slate-200 mb-4">{title}</h2>
       {children}
-    </section>
+    </GlassPanel>
   )
 }

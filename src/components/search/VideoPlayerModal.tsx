@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
+import { motion } from 'framer-motion'
+import { AnimatedButton } from '../common/AnimatedButton'
 import { formatDuration } from '../../lib/format'
+import { strings } from '../../lib/strings'
 import type { RecordingRecord } from '../../../electron/shared/types'
 
 interface Props {
@@ -66,17 +69,31 @@ export function VideoPlayerModal({ recording, onClose }: Props): JSX.Element {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-6">
-      <div ref={containerRef} className="bg-surface-900 rounded-xl overflow-hidden w-full max-w-4xl flex flex-col">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-surface-800">
+    <motion.div
+      className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-6"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.18 }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <motion.div
+        ref={containerRef}
+        className="glass glass-strong overflow-hidden w-full max-w-4xl flex flex-col"
+        initial={{ opacity: 0, scale: 0.96, y: 16 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.97, y: 10 }}
+        transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+      >
+        <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
           <div>
             <p className="font-mono text-sm text-slate-200">{recording.barcode}</p>
             <p className="text-xs text-slate-500">
-              {recording.station} - {recording.camera} - {recording.resolution} @ {recording.fps}fps
+              {strings.videoPlayer.meta(recording.station, recording.camera, recording.resolution, recording.fps)}
             </p>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-200 text-sm">
-            Close
+            {strings.common.close}
           </button>
         </div>
 
@@ -102,39 +119,23 @@ export function VideoPlayerModal({ recording, onClose }: Props): JSX.Element {
           />
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => stepFrame(-1)}
-                className="px-2 py-1.5 rounded bg-surface-700 hover:bg-surface-600 text-sm"
-                title="Previous frame"
-              >
+              <AnimatedButton size="sm" onClick={() => stepFrame(-1)} title={strings.videoPlayer.prevFrame}>
                 ⏮
-              </button>
-              <button
-                onClick={togglePlay}
-                className="px-3 py-1.5 rounded bg-accent-600 hover:bg-accent-500 text-sm font-medium"
-              >
-                {playing ? 'Pause' : 'Play'}
-              </button>
-              <button
-                onClick={() => stepFrame(1)}
-                className="px-2 py-1.5 rounded bg-surface-700 hover:bg-surface-600 text-sm"
-                title="Next frame"
-              >
+              </AnimatedButton>
+              <AnimatedButton variant="primary" onClick={togglePlay}>
+                {playing ? strings.videoPlayer.pause : strings.videoPlayer.play}
+              </AnimatedButton>
+              <AnimatedButton size="sm" onClick={() => stepFrame(1)} title={strings.videoPlayer.nextFrame}>
                 ⏭
-              </button>
+              </AnimatedButton>
               <span className="text-xs text-slate-500 font-mono ml-2">
                 {formatDuration(currentTime)} / {formatDuration(duration || 0)}
               </span>
             </div>
-            <button
-              onClick={toggleFullscreen}
-              className="px-3 py-1.5 rounded bg-surface-700 hover:bg-surface-600 text-sm"
-            >
-              Fullscreen
-            </button>
+            <AnimatedButton onClick={toggleFullscreen}>{strings.videoPlayer.fullscreen}</AnimatedButton>
           </div>
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   )
 }

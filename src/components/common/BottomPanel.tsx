@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react'
+import { motion } from 'framer-motion'
 import { formatBytes, formatDuration, formatDateTime } from '../../lib/format'
+import { strings } from '../../lib/strings'
 import type { RecordingRecord, SystemStatusInfo } from '../../../electron/shared/types'
 
 const POLL_MS = 5000
+const T = strings.bottomPanel
 
 export function BottomPanel(): JSX.Element {
   const [status, setStatus] = useState<SystemStatusInfo | null>(null)
@@ -31,11 +34,11 @@ export function BottomPanel(): JSX.Element {
   }, [])
 
   return (
-    <div className="border-t border-surface-800 bg-surface-900 px-6 py-3 grid grid-cols-1 lg:grid-cols-3 gap-6 text-sm">
+    <div className="glass border-t border-white/10 rounded-none px-6 py-3 grid grid-cols-1 lg:grid-cols-3 gap-6 text-sm">
       <div>
-        <h3 className="text-xs uppercase tracking-wide text-slate-500 mb-2">Recent recordings</h3>
+        <h3 className="text-xs uppercase tracking-wide text-slate-500 mb-2">{T.recentRecordings}</h3>
         <ul className="space-y-1 max-h-24 overflow-auto">
-          {recent.length === 0 && <li className="text-slate-600">No recordings yet</li>}
+          {recent.length === 0 && <li className="text-slate-600">{T.noRecordingsYet}</li>}
           {recent.map((r) => (
             <li key={r.id} className="flex items-center justify-between text-slate-300">
               <span className="font-mono">{r.barcode}</span>
@@ -47,30 +50,31 @@ export function BottomPanel(): JSX.Element {
       </div>
 
       <div>
-        <h3 className="text-xs uppercase tracking-wide text-slate-500 mb-2">Disk usage</h3>
+        <h3 className="text-xs uppercase tracking-wide text-slate-500 mb-2">{T.diskUsage}</h3>
         {status && (
           <>
-            <div className="w-full h-2 bg-surface-700 rounded-full overflow-hidden">
-              <div
+            <div className="w-full h-2 bg-surface-700/60 rounded-full overflow-hidden">
+              <motion.div
                 className={`h-full ${status.disk.lowDiskWarning ? 'bg-rec-500' : 'bg-accent-500'}`}
-                style={{ width: `${status.disk.usedPercent}%` }}
+                animate={{ width: `${status.disk.usedPercent}%` }}
+                transition={{ duration: 0.4, ease: 'easeOut' }}
               />
             </div>
             <p className="text-slate-400 mt-2">
-              {formatBytes(status.disk.freeBytes)} free of {formatBytes(status.disk.totalBytes)}
-              {status.disk.lowDiskWarning && <span className="text-rec-500 ml-2">Low disk space</span>}
+              {T.freeOfTotal(formatBytes(status.disk.freeBytes), formatBytes(status.disk.totalBytes))}
+              {status.disk.lowDiskWarning && <span className="text-rec-500 ml-2">{T.lowDiskSpace}</span>}
             </p>
           </>
         )}
       </div>
 
       <div>
-        <h3 className="text-xs uppercase tracking-wide text-slate-500 mb-2">System status</h3>
+        <h3 className="text-xs uppercase tracking-wide text-slate-500 mb-2">{T.systemStatus}</h3>
         {status && (
           <ul className="text-slate-400 space-y-0.5">
-            <li>Uptime: {formatDuration(status.uptimeSeconds)}</li>
-            <li>Total recordings: {status.totalRecordings}</li>
-            <li>Active recordings: {status.activeRecordings}</li>
+            <li>{T.uptime(formatDuration(status.uptimeSeconds))}</li>
+            <li>{T.totalRecordings(status.totalRecordings)}</li>
+            <li>{T.activeRecordings(status.activeRecordings)}</li>
           </ul>
         )}
       </div>

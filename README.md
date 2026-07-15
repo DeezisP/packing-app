@@ -5,6 +5,13 @@ scanners and USB webcams. Everything - the UI, the SQLite database, FFmpeg, and 
 videos - runs and lives inside this one folder. No server, no cloud, no internet connection
 required at any point.
 
+The interface is a fully Thai-language, Apple-inspired frosted-glass UI (blurred translucent
+panels, soft shadows, smooth animated transitions throughout) built on a small reusable design
+system (`GlassPanel`, `AnimatedButton`, `AnimatedDialog`, `NotificationToast`, `StationCard`,
+`DeviceStatus`, `CameraPreview`, `RecordingStatus`), and the Dashboard supports any number of
+packing stations - 1, 2, 12, or more - reflowing its grid automatically instead of assuming a
+fixed count.
+
 ## How it works
 
 1. The app opens showing **Waiting for barcode...** for every configured packing station.
@@ -19,9 +26,11 @@ required at any point.
 
 ### Multiple stations & scanner routing
 
-Every packing station (Dashboard panel) has its own independent camera, timer, and recording
-process - Station A and Station B can record two different barcodes at the same time without
-interfering with each other.
+Every packing station (Dashboard card) has its own independent camera, timer, and recording
+process - any number of stations can record different barcodes at the same time without
+interfering with each other. The Dashboard grid is fully dynamic (`repeat(auto-fit, minmax(...))`)
+and reflows on its own as stations are added, removed, resized, or the window is resized - there
+is no hardcoded two-station layout anywhere in the app.
 
 Windows normally can't tell two "keyboard-emulating" USB barcode scanners apart - they all show up
 as generic HID keyboards, and by the time a keystroke reaches a browser/Electron window it has
@@ -30,8 +39,26 @@ already lost any notion of which physical device sent it. PackingRecorder works 
 "Device Pairing" below. A scan from a scanner paired to a station routes straight there
 automatically, regardless of which station is currently "active." Any station without a paired
 scanner (or if Raw Input can't be used for some reason - see Known limitations) falls back to the
-**active station selector**: click a panel (or press `1`-`9`) to make it active, then the next
-scan anywhere routes there.
+**active station selector**: click a card (or press `1`-`9`, which reaches the first nine enabled
+stations - click still works for any station beyond that) to make it active, then the next scan
+anywhere routes there.
+
+### Managing packing stations
+
+Settings → **Packing Stations** manages the full list:
+
+- **+ Add station** creates a new one; each card can be **renamed** inline.
+- **▲ / ▼** reorders stations - the order shown here is the order they appear on the Dashboard.
+- The enable toggle on each card **disables** a station without deleting its configuration: a
+  disabled station disappears from the Dashboard, never accepts scans, and can be re-enabled later
+  with all its settings (camera, scanner pairing, resolution, etc.) intact.
+- Camera, microphone, resolution, FPS, and bitrate are configured per station, same as before.
+- **Save location** can either inherit the app-wide folder (Settings → General) or be overridden
+  per station - useful when different stations should write to different drives/shares.
+
+A config upgrading from an older version that has no `enabled`/`saveLocationOverride` fields yet is
+normalized on load (`enabled` defaults to `true`, save location defaults to inherit-global), so
+existing stations never disappear or misconfigure themselves after an update.
 
 ## Device Pairing
 
@@ -129,11 +156,15 @@ the `Videos/` folder directly without going through the app:
 
 ## Technology
 
-Electron + React + TypeScript + Tailwind CSS + SQLite (`sql.js`, a pure WebAssembly build - no
-native compilation required) + FFmpeg (`ffmpeg-static`, bundled) + [`koffi`](https://koffi.dev)
-(a prebuilt-binary FFI library used only for the handful of `user32.dll` Raw Input calls behind
-Device Pairing - no native compilation needed there either) + electron-builder. No Express, no
-Next.js, no Docker, no cloud services - everything ships and runs inside this folder.
+Electron + React + TypeScript + Tailwind CSS + [Framer Motion](https://www.framer.com/motion/)
+(page/dialog/list animations) + SQLite (`sql.js`, a pure WebAssembly build - no native compilation
+required) + FFmpeg (`ffmpeg-static`, bundled) + [`koffi`](https://koffi.dev) (a prebuilt-binary FFI
+library used only for the handful of `user32.dll` Raw Input calls behind Device Pairing - no
+native compilation needed there either) + electron-builder. No Express, no Next.js, no Docker, no
+cloud services - everything ships and runs inside this folder.
+
+All UI text is in Thai (`src/lib/strings.ts` is the single source of truth for every string in the
+app - there is no language switcher; it is Thai-only by design).
 
 ## Folder structure
 
@@ -227,11 +258,13 @@ Then rebuild (`npm run dist` or `npm run dev`) - no other code changes are neede
 
 ## Settings
 
-Open the **Settings** tab to configure, per packing station: camera, microphone (optional audio),
-resolution (720p/1080p/1440p/4K), FPS, and bitrate, plus the save location, theme, Windows
-auto-start, database backups, and updates. Everything is written straight to `config.json` as soon
-as you interact with a control - there is no separate "Save" step, except for the save location
-(see below), which requires an explicit Apply/Browse action since it is validated first.
+Open the **Settings** tab to configure, per packing station: enabled/disabled, camera, microphone
+(optional audio), resolution (720p/1080p/1440p/4K), FPS, bitrate, and save location (global or
+per-station override) - see "Managing packing stations" above - plus the app-wide save location,
+theme, Windows auto-start, database backups, and updates. Everything is written straight to
+`config.json` as soon as you interact with a control - there is no separate "Save" step, except for
+the app-wide save location (see below), which requires an explicit Apply/Browse action since it is
+validated first.
 
 ## Changing the recording save location
 
@@ -368,7 +401,11 @@ PackingRecorder will offer it as an update the next time it checks.
   active-station selector, exactly as if no scanner had been paired - recording is never blocked
   by this.
 - **Light theme** is a functional but minimal palette swap (Settings → Theme); the app is
-  designed dark-first.
+  designed dark-first. Both themes render the same frosted-glass design system.
+- **Number-key hotkeys** (`1`-`9`) can only reach the first nine *enabled* stations, since there's
+  only one digit per key - clicking a station card always works regardless of how many stations
+  are configured.
+- **UI language**: the app is Thai-only; there is no in-app language switcher.
 - **Code signing**: the installer is not code-signed. Windows SmartScreen may warn on first
   install ("Windows protected your PC") - this is expected for an unsigned binary and does not
   affect auto-updates, which are integrity-checked via the sha512 hash in `latest.yml` regardless

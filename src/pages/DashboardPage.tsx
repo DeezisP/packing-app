@@ -1,12 +1,15 @@
-import { useEffect, useState, useCallback } from 'react'
-import { StationPanel } from '../components/dashboard/StationPanel'
+import { useEffect, useState, useCallback, useMemo } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
+import { StationCard } from '../components/dashboard/StationCard'
 import { WrongBarcodeToast } from '../components/dashboard/WrongBarcodeToast'
 import { DuplicateBarcodeDialog } from '../components/dashboard/DuplicateBarcodeDialog'
 import { UpdateAvailableModal } from '../components/dashboard/UpdateAvailableModal'
+import { GlassPanel } from '../components/common/GlassPanel'
 import { useBarcodeListener } from '../hooks/useBarcodeListener'
 import { useStationsState } from '../hooks/useStationsState'
 import { useUpdateState } from '../hooks/useUpdateState'
 import { useRawInputDevice } from '../hooks/useRawInputDevice'
+import { strings } from '../lib/strings'
 import type { AppConfig } from '../../electron/shared/types'
 
 interface Props {
@@ -23,6 +26,11 @@ export function DashboardPage({ config, onConfigChanged }: Props): JSX.Element {
   const updateAvailable = updateState.status === 'available' || updateState.status === 'downloaded'
   const showUpdateModal = updateAvailable && laterForVersion !== updateState.latestVersion
 
+  // Disabled stations stay configured (Settings can re-enable them) but never
+  // render or accept scans - the grid below is sized purely off this list,
+  // so it scales to any number of enabled stations without special-casing.
+  const enabledStations = useMemo(() => config.stations.filter((s) => s.enabled), [config.stations])
+
   useEffect(() => setActiveStationId(config.activeStationId), [config.activeStationId])
 
   const setActive = useCallback(
@@ -33,6 +41,15 @@ export function DashboardPage({ config, onConfigChanged }: Props): JSX.Element {
     },
     [onConfigChanged]
   )
+
+  // If the active station gets disabled or removed in Settings, fall back to
+  // the first still-enabled one so unpaired scans always have somewhere to
+  // go instead of silently hitting a disabled station and doing nothing.
+  useEffect(() => {
+    if (enabledStations.length === 0) return
+    if (enabledStations.some((s) => s.id === activeStationId)) return
+    setActive(enabledStations[0].id)
+  }, [enabledStations, activeStationId, setActive])
 
   const getLastRawInputDevice = useRawInputDevice()
   const handleScan = useCallback(
@@ -47,65 +64,86 @@ export function DashboardPage({ config, onConfigChanged }: Props): JSX.Element {
   )
   useBarcodeListener(handleScan, true)
 
-  // Number-key hotkeys let the operator switch the active station without a mouse.
+  // Number-key hotkeys let the operator switch the active station without a
+  // mouse - limited to the first 9 enabled stations since that's as far as a
+  // single digit key can reach; clicking a card always works regardless of count.
   useEffect(() => {
     function handleKey(e: KeyboardEvent): void {
       if (e.target instanceof HTMLElement && ['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return
       const index = Number(e.key) - 1
-      if (Number.isInteger(index) && index >= 0 && index < config.stations.length) {
-        setActive(config.stations[index].id)
+      if (Number.isInteger(index) && index >= 0 && index < enabledStations.length) {
+        setActive(enabledStations[index].id)
       }
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [config.stations, setActive])
+  }, [enabledStations, setActive])
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <div className="px-6 py-4 border-b border-surface-800 flex items-center justify-between">
+      <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold text-slate-100">Packing Stations</h1>
-          <p className="text-sm text-slate-500">
-            Waiting for barcode... paired scanners route automatically, unpaired ones use the active
-            station. Press 1-{config.stations.length} to switch.
-          </p>
+          <h1 className="text-lg font-semibold text-slate-100">{strings.dashboard.title}</h1>
+          <p className="text-sm text-slate-500">{strings.dashboard.subtitle(Math.min(enabledStations.length, 9))}</p>
         </div>
         {updateAvailable && (
-          <button
+          <motion.button
+            initial={{ opacity: 0, y: -6 }}
+            animate={{ opacity: 1, y: 0 }}
+            whileHover={{ scale: 1.03 }}
+            whileTap={{ scale: 0.97 }}
             onClick={() => setLaterForVersion(null)}
             className="text-xs font-medium px-3 py-1.5 rounded-full bg-accent-600/20 text-accent-500 hover:bg-accent-600/30"
           >
-            Update available - v{updateState.latestVersion}
-          </button>
+            {strings.dashboard.updateAvailable(updateState.latestVersion ?? '')}
+          </motion.button>
         )}
       </div>
 
       <div className="flex-1 overflow-auto p-6">
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          {config.stations.map((station, i) => (
-            <StationPanel
-              key={station.id}
-              station={station}
-              state={states[station.id]}
-              overlayConfig={config.overlay}
-              isActive={station.id === activeStationId}
-              hotkey={i + 1}
-              onSetActive={() => setActive(station.id)}
-            />
-          ))}
-        </div>
+        {enabledStations.length === 0 ? (
+          <GlassPanel className="p-8 text-center text-sm text-slate-500">
+            {strings.dashboard.noEnabledStations}
+          </GlassPanel>
+        ) : (
+          <div
+            className="grid gap-6"
+            style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))' }}
+          >
+            <AnimatePresence initial={false}>
+              {enabledStations.map((station, i) => (
+                <StationCard
+                  key={station.id}
+                  station={station}
+                  state={states[station.id]}
+                  overlayConfig={config.overlay}
+                  isActive={station.id === activeStationId}
+                  hotkey={i + 1}
+                  onSetActive={() => setActive(station.id)}
+                />
+              ))}
+            </AnimatePresence>
+          </div>
+        )}
       </div>
 
-      {wrongBarcode && <WrongBarcodeToast event={wrongBarcode} />}
-      {duplicateBarcode && <DuplicateBarcodeDialog event={duplicateBarcode} onClose={dismissDuplicateBarcode} />}
-      {showUpdateModal && (
-        <UpdateAvailableModal
-          state={updateState}
-          onDownload={() => window.electronAPI.update.download()}
-          onInstall={() => window.electronAPI.update.install()}
-          onLater={() => setLaterForVersion(updateState.latestVersion)}
-        />
-      )}
+      <AnimatePresence>{wrongBarcode && <WrongBarcodeToast key="wrong-barcode" event={wrongBarcode} />}</AnimatePresence>
+      <AnimatePresence>
+        {duplicateBarcode && (
+          <DuplicateBarcodeDialog key="duplicate-barcode" event={duplicateBarcode} onClose={dismissDuplicateBarcode} />
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {showUpdateModal && (
+          <UpdateAvailableModal
+            key="update-available"
+            state={updateState}
+            onDownload={() => window.electronAPI.update.download()}
+            onInstall={() => window.electronAPI.update.install()}
+            onLater={() => setLaterForVersion(updateState.latestVersion)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   )
 }

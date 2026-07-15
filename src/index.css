@@ -17,6 +17,20 @@
   --ink-400: 148 163 184;
   --ink-500: 100 116 139;
   --ink-600: 71 85 105;
+
+  /* Glassmorphism tokens - full rgba() values (not the space-separated
+     triplets above) since the tint AND its alpha both change per theme, not
+     just the alpha - a light tint sitting over the dark aurora background
+     reads as frosted glass; the border is a soft hairline of the same tint. */
+  --glass-bg: rgba(255, 255, 255, 0.07);
+  --glass-bg-strong: rgba(255, 255, 255, 0.14);
+  --glass-border-color: rgba(255, 255, 255, 0.14);
+  --glass-shadow-color: rgba(0, 0, 0, 0.45);
+
+  /* Soft blurred color blobs behind every glass surface - dark theme. */
+  --aurora-1: 59 130 246;
+  --aurora-2: 168 85 247;
+  --aurora-3: 16 185 129;
 }
 
 :root.light {
@@ -35,6 +49,17 @@
   --ink-400: 71 85 105;
   --ink-500: 100 116 139;
   --ink-600: 148 163 184;
+
+  /* Light theme: white tint used at much higher alpha over a pale aurora,
+     with a dark hairline border since a white-on-white border would vanish. */
+  --glass-bg: rgba(255, 255, 255, 0.55);
+  --glass-bg-strong: rgba(255, 255, 255, 0.75);
+  --glass-border-color: rgba(15, 23, 42, 0.08);
+  --glass-shadow-color: rgba(15, 23, 42, 0.12);
+
+  --aurora-1: 96 165 250;
+  --aurora-2: 216 180 254;
+  --aurora-3: 110 231 183;
 }
 
 @layer base {
@@ -73,5 +98,83 @@
     50% {
       opacity: 0.35;
     }
+  }
+
+  /* Fixed, blurred color blobs sitting behind the whole app so every glass
+     panel in front of it has something translucent to reveal. Panels never
+     blur an otherwise-flat background, which is what would make backdrop
+     blur invisible. */
+  .app-aurora {
+    @apply pointer-events-none fixed inset-0 -z-10 overflow-hidden bg-surface-950;
+  }
+  .app-aurora > span {
+    @apply absolute rounded-full opacity-40 blur-3xl;
+    animation: aurora-drift 24s ease-in-out infinite alternate;
+  }
+  .app-aurora > span:nth-child(1) {
+    top: -10%;
+    left: -5%;
+    width: 45vw;
+    height: 45vw;
+    background: rgb(var(--aurora-1) / 0.55);
+  }
+  .app-aurora > span:nth-child(2) {
+    bottom: -15%;
+    right: -10%;
+    width: 50vw;
+    height: 50vw;
+    background: rgb(var(--aurora-2) / 0.45);
+    animation-delay: -8s;
+  }
+  .app-aurora > span:nth-child(3) {
+    bottom: 10%;
+    left: 20%;
+    width: 35vw;
+    height: 35vw;
+    background: rgb(var(--aurora-3) / 0.35);
+    animation-delay: -16s;
+  }
+  @keyframes aurora-drift {
+    0% {
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+    100% {
+      transform: translate3d(3%, 4%, 0) scale(1.08);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .app-aurora > span {
+      animation: none;
+    }
+  }
+
+  /* Base frosted-glass surface - GlassPanel and every dialog/toast/card
+     built on it share this one definition instead of repeating the same
+     bg/border/blur/shadow utility soup at every call site. Plain CSS (not
+     @apply) because the tint/border/shadow colors vary per theme through
+     the rgba() custom properties above, not through a Tailwind variant. */
+  .glass {
+    @apply backdrop-blur-xl rounded-2xl;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border-color);
+    box-shadow: 0 8px 32px var(--glass-shadow-color);
+  }
+  .glass-strong {
+    background: var(--glass-bg-strong);
+  }
+  .glass-interactive {
+    @apply transition-all duration-200 ease-out;
+  }
+  .glass-interactive:hover {
+    background: var(--glass-bg-strong);
+    transform: translateY(-1px);
+  }
+
+  /* Cheap, dependency-free virtualization for potentially long lists (search
+     results): off-screen rows skip layout/paint entirely until scrolled
+     near, without needing a windowing library. */
+  .cv-row {
+    content-visibility: auto;
+    contain-intrinsic-size: 0 44px;
   }
 }

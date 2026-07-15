@@ -24,22 +24,26 @@
     {
       "id": "station-a",
       "name": "Packing Station A",
+      "enabled": true,
       "cameraName": null,
       "micName": null,
       "resolutionPreset": "1080p",
       "fps": 30,
       "bitrateKbps": 8000,
-      "scannerDeviceId": null
+      "scannerDeviceId": null,
+      "saveLocationOverride": null
     },
     {
       "id": "station-b",
       "name": "Packing Station B",
+      "enabled": true,
       "cameraName": null,
       "micName": null,
       "resolutionPreset": "1080p",
       "fps": 30,
       "bitrateKbps": 8000,
-      "scannerDeviceId": null
+      "scannerDeviceId": null,
+      "saveLocationOverride": null
     }
   ]
 }

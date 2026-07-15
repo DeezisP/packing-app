@@ -202,7 +202,11 @@ class StationManager extends EventEmitter {
   }
 
   private async checkDiskDuringRecording(stationId: string): Promise<void> {
-    const usage = await getDiskUsage(configManager.getResolvedSaveLocation())
+    const station = this.getStationConfig(stationId)
+    const saveLocation = station
+      ? configManager.getResolvedSaveLocationForStation(station)
+      : configManager.getResolvedSaveLocation()
+    const usage = await getDiskUsage(saveLocation)
     if (usage.freeBytes < CRITICAL_DISK_STOP_BYTES) {
       logger.error('Disk critically low, safely stopping recording', { stationId, freeBytes: usage.freeBytes })
       await this.forceStopForSafety(stationId, 'Disk space critically low - recording stopped safely')
@@ -272,6 +276,11 @@ class StationManager extends EventEmitter {
       return
     }
 
+    if (!station.enabled) {
+      logger.warn('Scan ignored: station is disabled', { stationId })
+      return
+    }
+
     if (state.status === 'recording') {
       if (state.barcode === barcode) {
         await this.stopRecording(stationId)
@@ -284,7 +293,7 @@ class StationManager extends EventEmitter {
     }
 
     // idle or error state: attempt to start a new recording
-    const saveLocation = configManager.getResolvedSaveLocation()
+    const saveLocation = configManager.getResolvedSaveLocationForStation(station)
     const existingFolder = path.join(saveLocation, barcode)
     const existingRow = database.findExistingByBarcode(barcode)
     const folderExists = fs.existsSync(existingFolder)
