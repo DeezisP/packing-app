@@ -41,7 +41,10 @@ export function StationPanel({ station, state, isActive, hotkey, onSetActive }: 
       <div className="relative aspect-video bg-black">
         <video ref={videoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
         {!station.cameraName && (
-          <div className="absolute inset-0 flex items-center justify-center text-slate-500 text-sm">
+          // Fixed (non-theme-remapped) gray - this sits on the permanently-black
+          // camera viewport, not the app's surface background, so it must stay
+          // legible regardless of light/dark theme.
+          <div className="absolute inset-0 flex items-center justify-center text-zinc-400 text-sm">
             No camera assigned
           </div>
         )}

@@ -47,6 +47,11 @@ PackingRecorder/
     shared/            Types & IPC channel names shared by main + renderer
   src/                 React renderer (Dashboard, Search, Settings, video player)
   public/              Static assets copied as-is into the renderer build
+  build/
+    icon.ico             App icon used by electron-builder (installer, .exe, Start Menu/Desktop
+                          shortcuts) - see "App icon / branding" below
+  resources/
+    icon.ico             Same icon, shipped as a runtime resource for the window/taskbar icon
   database/
     schema.sql         Reference copy of the SQLite schema (also embedded in Database.ts)
   Videos/               Recorded packing videos (Videos/<barcode>/packing.mp4 + thumbnail.jpg)
@@ -99,6 +104,26 @@ All three files are what you upload to a GitHub Release (see "Publishing a new v
 instead if you just want an unpacked `release/win-unpacked/PackingRecorder.exe` for a quick local
 smoke test (auto-update does not work from this unpacked form - only the installed app has the
 `app-update.yml` electron-updater needs).
+
+## App icon / branding
+
+The app icon (window/taskbar icon, installer icon, uninstaller icon, Start Menu and Desktop
+shortcuts) is `build/icon.ico`, referenced explicitly in `electron-builder.yml` (`win.icon`,
+`nsis.installerIcon`, `nsis.uninstallerIcon`, `nsis.installerHeaderIcon`) so it's always used
+instead of the generic default Electron icon. The same image is also copied to
+`resources/icon.ico` and shipped as a runtime resource (see `PathService.ts`'s `iconFile`) so the
+window carries the custom icon even when just running `npm run dev`, not only in a packaged build.
+
+To change it, replace both `build/icon.ico` and `resources/icon.ico` with a new multi-resolution
+`.ico` (containing at least 16x16, 32x32, and 48x48 sizes) generated from your source image - a
+square PNG works well as the source. One way to regenerate it without any GUI tool:
+
+```powershell
+npm install --no-save png-to-ico
+node -e "const p=require('png-to-ico');const fs=require('fs');p('path/to/logo.png').then(b=>{fs.writeFileSync('build/icon.ico',b);fs.copyFileSync('build/icon.ico','resources/icon.ico')})"
+```
+
+Then rebuild (`npm run dist` or `npm run dev`) - no other code changes are needed.
 
 ## Settings
 

@@ -26,7 +26,10 @@ export const defaultPaths = {
   videosDir: path.join(appRoot, 'Videos'),
   ffmpegBinary: app.isPackaged
     ? path.join(process.resourcesPath, 'ffmpeg', 'ffmpeg.exe')
-    : null // resolved from the ffmpeg-static package in dev, see FfmpegLocator
+    : null, // resolved from the ffmpeg-static package in dev, see FfmpegLocator
+  iconFile: app.isPackaged
+    ? path.join(process.resourcesPath, 'icon.ico')
+    : path.join(appRoot, 'resources', 'icon.ico')
 }
 
 export function resolveSaveLocation(saveLocation: string): string {

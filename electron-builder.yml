@@ -12,6 +12,8 @@ extraResources:
     to: ffmpeg/ffmpeg.exe
   - from: config.default.json
     to: config.default.json
+  - from: resources/icon.ico
+    to: icon.ico
 publish:
   - provider: github
     owner: DeezisP
@@ -22,6 +24,7 @@ win:
       arch:
         - x64
   artifactName: ${productName}-Setup-${version}.${ext}
+  icon: build/icon.ico
 nsis:
   oneClick: false
   perMachine: false
@@ -29,5 +32,8 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: PackingRecorder
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerHeaderIcon: build/icon.ico
 asarUnpack:
   - node_modules/sql.js/dist/sql-wasm.wasm

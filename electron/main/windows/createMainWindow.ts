@@ -2,6 +2,7 @@ import { BrowserWindow, session, shell } from 'electron'
 import { is } from '@electron-toolkit/utils'
 import path from 'node:path'
 import { logger } from '../services/Logger'
+import { defaultPaths } from '../services/PathService'
 
 export function createMainWindow(): BrowserWindow {
   // This is a trusted, fully offline kiosk app - webcam access is core to its
@@ -18,6 +19,7 @@ export function createMainWindow(): BrowserWindow {
     show: false,
     autoHideMenuBar: true,
     backgroundColor: '#0a0b0f',
+    icon: defaultPaths.iconFile,
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
