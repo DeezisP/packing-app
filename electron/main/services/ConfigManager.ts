@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import { defaultPaths, resolveSaveLocation } from './PathService'
 import { logger } from './Logger'
@@ -21,25 +22,68 @@ class ConfigManager extends EventEmitter {
 
   private load(): AppConfig {
     const fallback = this.defaults
-    if (!fs.existsSync(defaultPaths.configFile)) {
-      fs.writeFileSync(defaultPaths.configFile, JSON.stringify(fallback, null, 2))
-      return fallback
+    const primary = this.readConfigFile(defaultPaths.configFile)
+    if (primary) {
+      const merged = this.mergeWithDefaults(primary, fallback)
+      // Seed/refresh the backup on every normal launch too, not just when a
+      // setting changes, so a backup exists from the very first run.
+      this.writeConfigFiles(merged)
+      return merged
     }
-    try {
-      const raw = fs.readFileSync(defaultPaths.configFile, 'utf-8')
-      const parsed = JSON.parse(raw) as Partial<AppConfig>
-      // Shallow-merge so new fields introduced by app updates get sane defaults.
-      return { ...fallback, ...parsed, stations: parsed.stations?.length ? parsed.stations : fallback.stations }
-    } catch (err) {
-      logger.error('Failed to parse config.json, falling back to defaults', {
-        error: (err as Error).message
+
+    // Primary is missing or unreadable (e.g. an update process touched the
+    // install folder unexpectedly) - fall back to the userData backup so
+    // paired scanners, stations, and every other setting survive instead of
+    // silently resetting to bare defaults.
+    const backup = this.readConfigFile(defaultPaths.configBackupFile)
+    if (backup) {
+      logger.warn('config.json missing or unreadable - restored from backup', {
+        backup: defaultPaths.configBackupFile
       })
-      return fallback
+      const restored = this.mergeWithDefaults(backup, fallback)
+      this.writeConfigFiles(restored)
+      return restored
+    }
+
+    this.writeConfigFiles(fallback)
+    return fallback
+  }
+
+  private readConfigFile(filePath: string): Partial<AppConfig> | null {
+    if (!fs.existsSync(filePath)) return null
+    try {
+      // Strip a leading UTF-8 BOM - this app never writes one, but some
+      // Windows editors/tools do when a file gets hand-edited, and a BOM
+      // makes JSON.parse throw on an otherwise perfectly valid file. Checked
+      // via char code (0xFEFF) rather than a literal character in source to
+      // avoid any editor/encoding ambiguity around invisible characters.
+      let raw = fs.readFileSync(filePath, 'utf-8')
+      if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1)
+      return JSON.parse(raw) as Partial<AppConfig>
+    } catch (err) {
+      logger.error('Failed to parse config file', { filePath, error: (err as Error).message })
+      return null
     }
   }
 
+  // Shallow-merge so new fields introduced by app updates get sane defaults.
+  private mergeWithDefaults(parsed: Partial<AppConfig>, fallback: AppConfig): AppConfig {
+    return { ...fallback, ...parsed, stations: parsed.stations?.length ? parsed.stations : fallback.stations }
+  }
+
   private persist(): void {
-    fs.writeFileSync(defaultPaths.configFile, JSON.stringify(this.config, null, 2))
+    this.writeConfigFiles(this.config)
+  }
+
+  private writeConfigFiles(config: AppConfig): void {
+    const json = JSON.stringify(config, null, 2)
+    fs.writeFileSync(defaultPaths.configFile, json)
+    try {
+      fs.mkdirSync(path.dirname(defaultPaths.configBackupFile), { recursive: true })
+      fs.writeFileSync(defaultPaths.configBackupFile, json)
+    } catch (err) {
+      logger.error('Failed to write config backup', { error: (err as Error).message })
+    }
   }
 
   get(): AppConfig {

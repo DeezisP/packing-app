@@ -58,6 +58,14 @@ Pairings are stored in `config.json` under `identifiedScanners` (id + your chose
 station's `scannerDeviceId` (which scanner, if any, is assigned to it) - both update immediately,
 no manual file editing needed, and changes apply without restarting the app.
 
+**Survives updates and reinstalls**: every time settings change, the same config is also mirrored
+to a backup copy in the OS-managed per-user data folder (outside the app's own install directory,
+which is the only place NSIS install/update/uninstall ever touches). If `config.json` is ever
+found missing or unreadable at startup - including after an app update - it's restored from that
+backup automatically before anything else loads, so paired scanners, station setup, and every
+other setting survive intact. This is a defense-in-depth safeguard on top of NSIS's own default
+behavior, which already leaves files it didn't ship (like `config.json`) alone.
+
 If a paired scanner or camera disconnects, only *that station* shows a warning - the other
 stations keep recording and operating normally. A station with a disconnected scanner can still be
 operated via the active-station selector in the meantime.

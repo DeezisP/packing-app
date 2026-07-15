@@ -51,12 +51,18 @@ export function UpdatePanel({ state, onCheck, onDownload, onInstall, showCheckBu
           </button>
         )}
         {state.status === 'downloaded' && (
-          <button
-            onClick={onInstall}
-            className="px-3 py-1.5 rounded-lg text-sm bg-ok-500 hover:opacity-90 text-surface-950 font-medium"
-          >
-            Restart & Install
-          </button>
+          <div className="flex flex-col gap-1">
+            <button
+              onClick={onInstall}
+              className="px-3 py-1.5 rounded-lg text-sm bg-ok-500 hover:opacity-90 text-surface-950 font-medium"
+            >
+              Restart & Install
+            </button>
+            <span className="text-xs text-slate-500">
+              The app will close, update in the background, and reopen automatically on the new
+              version - no installer window, nothing else to do.
+            </span>
+          </div>
         )}
         {state.status === 'error' && !showCheckButton && (
           <button onClick={onCheck} className="px-3 py-1.5 rounded-lg text-sm bg-surface-700 hover:bg-surface-600">
@@ -81,7 +87,7 @@ function StatusLine({ state }: { state: UpdateState }): JSX.Element {
     case 'downloading':
       return <p className="text-sm text-slate-400">Downloading update... {state.progressPercent ?? 0}%</p>
     case 'downloaded':
-      return <p className="text-sm text-ok-500">Update downloaded. Restart to install.</p>
+      return <p className="text-sm text-ok-500">Update downloaded and ready to install.</p>
     case 'error':
       return <p className="text-sm text-rec-500">{state.error ?? 'Unable to check for updates. Please try again later.'}</p>
     default:
