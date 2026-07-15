@@ -221,9 +221,10 @@ compared is always read from `package.json` (`app.getVersion()`); it is never ha
 
 **How installing works:** nothing downloads automatically. Checking only tells you a version is
 available; clicking **Download & Install** downloads it in the background with a visible progress
-bar, and only once that finishes are you asked to restart - clicking **Restart & Install** quits
-and relaunches the app on the new version. Declining ("Later") leaves the running app completely
-untouched.
+bar, and only once that finishes are you asked to restart - clicking **Restart & Install** quits,
+installs, and relaunches the app on the new version completely silently (no installer window,
+no wizard - the app just briefly closes and reopens). Declining ("Later") leaves the running app
+completely untouched.
 
 Updates only work in an **installed** build (the NSIS installer output), because that's the only
 form that carries the `app-update.yml` electron-updater reads at runtime. Running from `npm run

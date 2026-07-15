@@ -96,7 +96,13 @@ class UpdateService extends EventEmitter {
 
   quitAndInstall(): void {
     logger.info('Installing update and restarting application')
-    autoUpdater.quitAndInstall()
+    // isSilent=true: run the NSIS installer with no UI at all (the wizard
+    // shown on a fresh manual install would otherwise reappear here too,
+    // since that installer is intentionally "assisted" - oneClick: false -
+    // for first-time installs). isForceRunAfter=true: relaunch the app
+    // automatically once the silent install finishes, so the operator just
+    // sees the app briefly close and reopen on the new version.
+    autoUpdater.quitAndInstall(true, true)
   }
 }
 
