@@ -6,6 +6,20 @@
   "dbBackupIntervalHours": 24,
   "activeStationId": "station-a",
   "identifiedScanners": [],
+  "overlay": {
+    "enabled": true,
+    "showBarcode": true,
+    "showDate": true,
+    "showTime": true,
+    "showTimer": true,
+    "showStation": true,
+    "showCamera": true,
+    "position": "top-left",
+    "fontSize": 28,
+    "fontColor": "#ffffff",
+    "backgroundColor": "#000000",
+    "backgroundOpacity": 50
+  },
   "stations": [
     {
       "id": "station-a",

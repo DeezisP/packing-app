@@ -6,6 +6,8 @@ import { database } from './Database'
 import { recordingEngine } from './RecordingEngine'
 import { cameraManager } from './CameraManager'
 import { scannerManager } from './ScannerManager'
+import { overlayService } from './OverlayService'
+import { writeRecordingMetadata } from './MetadataService'
 import { getDiskUsage, CRITICAL_DISK_STOP_BYTES } from './DiskMonitor'
 import { validateSaveLocation } from './SaveLocationValidator'
 import { logger } from './Logger'
@@ -210,11 +212,13 @@ class StationManager extends EventEmitter {
   private async forceStopForSafety(stationId: string, reason: string): Promise<void> {
     const state = this.states.get(stationId)
     if (!state || state.status !== 'recording') return
+    overlayService.stop(stationId)
     await recordingEngine.stop(stationId)
     if (state.dbId && state.videoPath) {
       const thumb = await recordingEngine.generateThumbnail(state.videoPath)
       database.completeRecording(state.dbId, thumb)
     }
+    this.writeMetadataFor(stationId, state)
     this.setState(stationId, {
       status: 'error',
       lastError: reason,
@@ -322,8 +326,22 @@ class StationManager extends EventEmitter {
       return
     }
 
+    const startedAt = new Date()
+    const overlayConfig = configManager.get().overlay
+    const overlay = overlayConfig.enabled
+      ? {
+          config: overlayConfig,
+          textFilePath: overlayService.start(
+            stationId,
+            overlayConfig,
+            { barcode, station: station.name, camera: station.cameraName },
+            startedAt
+          )
+        }
+      : null
+
     try {
-      const result = await recordingEngine.start(station, barcode, saveLocation)
+      const result = await recordingEngine.start(station, barcode, saveLocation, overlay)
       const resolution = RESOLUTION_PRESETS[station.resolutionPreset]
       const dbId = database.insertRecordingStart({
         barcode,
@@ -339,7 +357,7 @@ class StationManager extends EventEmitter {
         status: 'recording',
         barcode,
         cameraName: station.cameraName,
-        startedAt: new Date().toISOString(),
+        startedAt: startedAt.toISOString(),
         elapsedSeconds: 0,
         lastError: null,
         dbId,
@@ -347,6 +365,7 @@ class StationManager extends EventEmitter {
       })
       logger.info('Recording started', { stationId, barcode, camera: station.cameraName })
     } catch (err) {
+      overlayService.stop(stationId)
       const message = (err as Error).message
       this.setState(stationId, { status: 'error', lastError: message })
       logger.error('Failed to start recording', { stationId, barcode, error: message })
@@ -357,6 +376,7 @@ class StationManager extends EventEmitter {
     const state = this.states.get(stationId)
     if (!state) return
 
+    overlayService.stop(stationId)
     await recordingEngine.stop(stationId)
 
     let thumbnailPath: string | null = null
@@ -366,6 +386,7 @@ class StationManager extends EventEmitter {
     if (state.dbId) {
       database.completeRecording(state.dbId, thumbnailPath)
     }
+    this.writeMetadataFor(stationId, state)
 
     logger.info('Recording stopped', { stationId, barcode: state.barcode })
 
@@ -377,6 +398,25 @@ class StationManager extends EventEmitter {
       dbId: null,
       videoPath: null,
       lastError: null
+    })
+  }
+
+  /** Best-effort metadata.json write - skipped silently if the recording
+   *  never got far enough to have a barcode/start time/output path. */
+  private writeMetadataFor(stationId: string, state: StationRuntime): void {
+    if (!state.videoPath || !state.startedAt || !state.barcode) return
+    const station = this.getStationConfig(stationId)
+    if (!station) return
+    const resolution = RESOLUTION_PRESETS[station.resolutionPreset]
+    writeRecordingMetadata({
+      videoPath: state.videoPath,
+      barcode: state.barcode,
+      station: station.name,
+      camera: state.cameraName ?? station.cameraName ?? 'Unknown',
+      startedAt: new Date(state.startedAt),
+      endedAt: new Date(),
+      resolution: `${resolution.width}x${resolution.height}`,
+      fps: station.fps
     })
   }
 

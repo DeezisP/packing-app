@@ -4,7 +4,9 @@ import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import { resolveFfmpegPath } from './FfmpegLocator'
 import { logger } from './Logger'
-import { RESOLUTION_PRESETS, type StationConfig } from '@shared/types'
+import { RESOLUTION_PRESETS, type StationConfig, type OverlayConfig } from '@shared/types'
+
+const SYSTEM_FONT_FILE = 'C:/Windows/Fonts/arial.ttf'
 
 interface ActiveRecording {
   stationId: string
@@ -29,7 +31,12 @@ class RecordingEngine extends EventEmitter {
     return this.active.has(stationId)
   }
 
-  async start(station: StationConfig, barcode: string, saveLocation: string): Promise<StartResult> {
+  async start(
+    station: StationConfig,
+    barcode: string,
+    saveLocation: string,
+    overlay: { config: OverlayConfig; textFilePath: string } | null
+  ): Promise<StartResult> {
     if (!station.cameraName) {
       throw new Error(`Station "${station.name}" has no camera assigned`)
     }
@@ -50,7 +57,8 @@ class RecordingEngine extends EventEmitter {
       height: resolution.height,
       fps: station.fps,
       bitrateKbps: station.bitrateKbps,
-      outputPath: videoPath
+      outputPath: videoPath,
+      overlay
     })
 
     logger.info('Starting ffmpeg recording', { station: station.name, barcode, args: args.join(' ') })
@@ -174,6 +182,7 @@ function buildRecordArgs(input: {
   fps: number
   bitrateKbps: number
   outputPath: string
+  overlay: { config: OverlayConfig; textFilePath: string } | null
 }): string[] {
   const deviceSpec = input.micName ? `video=${input.cameraName}:audio=${input.micName}` : `video=${input.cameraName}`
 
@@ -190,7 +199,14 @@ function buildRecordArgs(input: {
     '-rtbufsize',
     '512M',
     '-i',
-    deviceSpec,
+    deviceSpec
+  ]
+
+  if (input.overlay?.config.enabled) {
+    args.push('-vf', buildOverlayFilter(input.overlay.config, input.overlay.textFilePath))
+  }
+
+  args.push(
     '-c:v',
     'libx264',
     '-preset',
@@ -199,7 +215,7 @@ function buildRecordArgs(input: {
     'yuv420p',
     '-b:v',
     `${input.bitrateKbps}k`
-  ]
+  )
 
   if (input.micName) {
     args.push('-c:a', 'aac', '-b:a', '128k')
@@ -209,6 +225,51 @@ function buildRecordArgs(input: {
 
   args.push('-movflags', '+faststart', '-y', input.outputPath)
   return args
+}
+
+/** ffmpeg's filtergraph value parser goes through two rounds of unescaping,
+ *  so a literal colon (as in a Windows drive letter) needs to survive both -
+ *  a single backslash is not enough and silently produces a "both text and
+ *  text file provided" parse error. Forward slashes avoid needing to escape
+ *  path separators at all. */
+function escapeFfmpegPath(p: string): string {
+  return p.replace(/\\/g, '/').replace(/:/g, '\\\\:')
+}
+
+function overlayPositionExpr(position: OverlayConfig['position']): { x: string; y: string } {
+  const margin = 20
+  switch (position) {
+    case 'top-left':
+      return { x: `${margin}`, y: `${margin}` }
+    case 'top-right':
+      return { x: `w-text_w-${margin}`, y: `${margin}` }
+    case 'bottom-left':
+      return { x: `${margin}`, y: `h-text_h-${margin}` }
+    case 'bottom-right':
+      return { x: `w-text_w-${margin}`, y: `h-text_h-${margin}` }
+  }
+}
+
+function buildOverlayFilter(config: OverlayConfig, textFilePath: string): string {
+  const { x, y } = overlayPositionExpr(config.position)
+  const fontColorHex = config.fontColor.replace('#', '')
+  const bgColorHex = config.backgroundColor.replace('#', '')
+  const bgOpacity = (Math.max(0, Math.min(100, config.backgroundOpacity)) / 100).toFixed(2)
+  const lineSpacing = Math.max(2, Math.round(config.fontSize * 0.3))
+
+  return [
+    `drawtext=fontfile=${escapeFfmpegPath(SYSTEM_FONT_FILE)}`,
+    `textfile=${escapeFfmpegPath(textFilePath)}`,
+    'reload=1',
+    `x=${x}`,
+    `y=${y}`,
+    `fontsize=${config.fontSize}`,
+    `fontcolor=0x${fontColorHex}`,
+    'box=1',
+    `boxcolor=0x${bgColorHex}@${bgOpacity}`,
+    'boxborderw=8',
+    `line_spacing=${lineSpacing}`
+  ].join(':')
 }
 
 function summarizeFfmpegError(stderrTail: string): string {

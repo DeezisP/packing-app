@@ -11,7 +11,7 @@ required at any point.
 2. Scan a barcode (the scanner types it like a keyboard, then presses Enter) at the **active
    station** - recording starts immediately with no clicks or dialogs.
 3. Scan the **same** barcode again to stop and save the recording to
-   `Videos/<barcode>/packing.mp4` (plus a `thumbnail.jpg`).
+   `Videos/<barcode>/packing.mp4` (plus a `thumbnail.jpg` and a `metadata.json`).
 4. Scanning a **different** barcode while a station is recording is rejected with a
    "Wrong barcode" notice; the active recording is never interrupted.
 5. Scanning a barcode that already has a folder on disk prompts **Recording already exists -
@@ -62,6 +62,63 @@ If a paired scanner or camera disconnects, only *that station* shows a warning -
 stations keep recording and operating normally. A station with a disconnected scanner can still be
 operated via the active-station selector in the meantime.
 
+## Recording Overlay
+
+Every recording can burn a plain-text information overlay directly into the video frames - not a
+UI-only annotation, it's permanently part of the exported MP4. Configure it in **Settings →
+Recording Overlay**:
+
+- Toggle the whole overlay on/off, and each line independently: Barcode, Date, Time, Recording
+  Timer, Packing Station, Camera Name.
+- Position (Top Left/Top Right/Bottom Left/Bottom Right), font size, font color, background color,
+  and background opacity are all configurable, with a live preview shown right there in Settings.
+- The same preview also appears live over each station's camera feed on the Dashboard, so what you
+  see while packing is what actually gets recorded.
+
+Example (default layout - top-left, white text, semi-transparent black background):
+
+```
+Order: ORD240715001
+Date: 2026-07-15
+Time: 14:36:18
+Recording: 00:02:45
+Station: Packing Station 1
+Camera: EMEET S600 #1
+```
+
+**How it's rendered:** ffmpeg's `drawtext` filter burns the text into the video during the same
+encode pass that's already happening (not a separate re-encode step), using a small text file that
+gets rewritten once a second while recording - `Time` and `Recording` update continuously and stay
+exactly in sync with the video itself, since the elapsed-time value comes from the same clock the
+Dashboard timer uses. Font rendering uses Windows' bundled Arial with libfreetype (anti-aliased,
+sans-serif, present on every Windows install - no font files to bundle). Refreshing that text file
+once a second adds negligible overhead to an already-running x264 encode; it does not introduce
+dropped frames or measurably affect recording performance.
+
+Existing recordings are never touched - this only affects new recordings made after you change a
+setting, and disabling the overlay entirely skips the filter altogether (zero overhead, same
+pipeline as before this feature existed).
+
+## Recording metadata (metadata.json)
+
+Alongside `packing.mp4` and `thumbnail.jpg`, every completed recording also gets a `metadata.json`
+in its folder - a plain-file companion to the database record, useful if you ever need to process
+the `Videos/` folder directly without going through the app:
+
+```json
+{
+  "barcode": "ORD240715001",
+  "station": "Packing Station 1",
+  "camera": "EMEET S600 #1",
+  "startTime": "2026-07-15T14:36:18.000Z",
+  "endTime": "2026-07-15T14:39:02.000Z",
+  "duration": "00:02:44",
+  "resolution": "1920x1080",
+  "fps": 30,
+  "fileSize": 245678901
+}
+```
+
 ## Technology
 
 Electron + React + TypeScript + Tailwind CSS + SQLite (`sql.js`, a pure WebAssembly build - no
@@ -88,7 +145,8 @@ PackingRecorder/
     icon.ico             Same icon, shipped as a runtime resource for the window/taskbar icon
   database/
     schema.sql         Reference copy of the SQLite schema (also embedded in Database.ts)
-  Videos/               Recorded packing videos (Videos/<barcode>/packing.mp4 + thumbnail.jpg)
+  Videos/               Recorded packing videos (Videos/<barcode>/packing.mp4 + thumbnail.jpg +
+                        metadata.json)
   Logs/                 Rotating app.log / error.log
   config.json           Runtime settings (created on first launch from config.default.json)
   database.sqlite       Recording history

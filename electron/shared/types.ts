@@ -43,6 +43,27 @@ export interface IdentifiedScanner {
   name: string
 }
 
+export type OverlayPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+
+/** Configures the text overlay burned directly into recorded video frames
+ *  (via ffmpeg's drawtext filter) - see OverlayService/RecordingEngine in
+ *  the main process, and OverlayPreview in the renderer for the WYSIWYG
+ *  live-preview that mirrors this same config. */
+export interface OverlayConfig {
+  enabled: boolean
+  showBarcode: boolean
+  showDate: boolean
+  showTime: boolean
+  showTimer: boolean
+  showStation: boolean
+  showCamera: boolean
+  position: OverlayPosition
+  fontSize: number
+  fontColor: string
+  backgroundColor: string
+  backgroundOpacity: number
+}
+
 export interface AppConfig {
   saveLocation: string
   theme: ThemeMode
@@ -52,6 +73,46 @@ export interface AppConfig {
   dbBackupIntervalHours: number
   activeStationId: string
   identifiedScanners: IdentifiedScanner[]
+  overlay: OverlayConfig
+}
+
+/** The values available to plug into an overlay line - some are static per
+ *  recording (barcode/station/camera), some update every second (date/time/
+ *  timer). Kept separate from OverlayConfig so the same builder works for
+ *  both the main-process text-file writer and the renderer's live preview. */
+export interface OverlayFieldData {
+  barcode: string
+  date: string
+  time: string
+  timer: string
+  station: string
+  camera: string
+}
+
+/** Single source of truth for "what text goes in the overlay" - used by both
+ *  the main process (writing the file ffmpeg burns in) and the renderer
+ *  (live preview), so the preview never drifts from what's actually
+ *  recorded. */
+export function buildOverlayLines(config: OverlayConfig, data: OverlayFieldData): string[] {
+  const lines: string[] = []
+  if (config.showBarcode) lines.push(`Order: ${data.barcode}`)
+  if (config.showDate) lines.push(`Date: ${data.date}`)
+  if (config.showTime) lines.push(`Time: ${data.time}`)
+  if (config.showTimer) lines.push(`Recording: ${data.timer}`)
+  if (config.showStation) lines.push(`Station: ${data.station}`)
+  if (config.showCamera) lines.push(`Camera: ${data.camera}`)
+  return lines
+}
+
+/** Always HH:MM:SS (never omits the hours segment like some other duration
+ *  formatters in this app do) - matches the overlay spec's example exactly,
+ *  and is shared so the burned-in video and the live preview never drift. */
+export function formatHms(totalSeconds: number): string {
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  const h = Math.floor(totalSeconds / 3600)
+  const m = Math.floor((totalSeconds % 3600) / 60)
+  const s = Math.floor(totalSeconds % 60)
+  return `${pad(h)}:${pad(m)}:${pad(s)}`
 }
 
 export type RecordingStatus = 'recording' | 'completed' | 'interrupted' | 'error'
@@ -132,6 +193,21 @@ export interface SystemStatusInfo {
   totalRecordings: number
   activeRecordings: number
   disk: DiskUsageInfo
+}
+
+/** Written as metadata.json alongside packing.mp4 when a recording
+ *  completes - a plain-file, human-readable companion to the database row,
+ *  useful for anyone processing the Videos/ folder directly. */
+export interface RecordingMetadata {
+  barcode: string
+  station: string
+  camera: string
+  startTime: string
+  endTime: string
+  duration: string
+  resolution: string
+  fps: number
+  fileSize: number
 }
 
 export interface LogEntry {

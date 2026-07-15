@@ -1,17 +1,21 @@
 import { useCameraPreview } from '../../hooks/useCameraPreview'
+import { useOverlayFieldData } from '../../hooks/useOverlayFieldData'
 import { formatDuration } from '../../lib/format'
-import type { StationConfig, StationRuntimeState } from '../../../electron/shared/types'
+import { OverlayPreview } from '../common/OverlayPreview'
+import type { StationConfig, StationRuntimeState, OverlayConfig } from '../../../electron/shared/types'
 
 interface Props {
   station: StationConfig
   state: StationRuntimeState | undefined
+  overlayConfig: OverlayConfig
   isActive: boolean
   hotkey: number
   onSetActive: () => void
 }
 
-export function StationPanel({ station, state, isActive, hotkey, onSetActive }: Props): JSX.Element {
+export function StationPanel({ station, state, overlayConfig, isActive, hotkey, onSetActive }: Props): JSX.Element {
   const { videoRef, error: previewError } = useCameraPreview(station.cameraName)
+  const overlayData = useOverlayFieldData(station, state)
   const status = state?.status ?? 'idle'
 
   return (
@@ -40,6 +44,7 @@ export function StationPanel({ station, state, isActive, hotkey, onSetActive }: 
 
       <div className="relative aspect-video bg-black">
         <video ref={videoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
+        {station.cameraName && <OverlayPreview config={overlayConfig} data={overlayData} />}
         {!station.cameraName && (
           // Fixed (non-theme-remapped) gray - this sits on the permanently-black
           // camera viewport, not the app's surface background, so it must stay

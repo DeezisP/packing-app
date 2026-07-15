@@ -87,6 +87,7 @@ export function DashboardPage({ config, onConfigChanged }: Props): JSX.Element {
               key={station.id}
               station={station}
               state={states[station.id]}
+              overlayConfig={config.overlay}
               isActive={station.id === activeStationId}
               hotkey={i + 1}
               onSetActive={() => setActive(station.id)}

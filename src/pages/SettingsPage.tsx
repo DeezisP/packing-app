@@ -1,9 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
 import { RESOLUTION_PRESETS } from '../../electron/shared/types'
 import { UpdatePanel } from '../components/common/UpdatePanel'
+import { OverlayPreview } from '../components/common/OverlayPreview'
 import { useUpdateState } from '../hooks/useUpdateState'
 import { formatBytes } from '../lib/format'
-import type { AppConfig, StationConfig, CameraDevice, ThemeMode, SaveLocationStatus } from '../../electron/shared/types'
+import type {
+  AppConfig,
+  StationConfig,
+  CameraDevice,
+  ThemeMode,
+  SaveLocationStatus,
+  OverlayConfig
+} from '../../electron/shared/types'
 
 interface Props {
   config: AppConfig
@@ -26,9 +34,17 @@ export function SettingsPage({ config, onConfigChanged }: Props): JSX.Element {
   const validationRequestId = useRef(0)
 
   const updateState = useUpdateState()
+  const [previewNow, setPreviewNow] = useState(() => sampleClock())
 
   useEffect(() => setDraft(config), [config])
   useEffect(() => setSaveLocationInput(config.saveLocation), [config.saveLocation])
+
+  // Keeps the overlay live-preview's date/time ticking, mirroring what the
+  // real burned-in overlay does during an actual recording.
+  useEffect(() => {
+    const timer = window.setInterval(() => setPreviewNow(sampleClock()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   // Live-validate the drafted (not yet applied) save location as the user types.
   useEffect(() => {
@@ -67,6 +83,10 @@ export function SettingsPage({ config, onConfigChanged }: Props): JSX.Element {
   function updateStation(id: string, partial: Partial<StationConfig>): void {
     const stations = draft.stations.map((s) => (s.id === id ? { ...s, ...partial } : s))
     persist({ ...draft, stations })
+  }
+
+  function updateOverlay(partial: Partial<OverlayConfig>): void {
+    persist({ ...draft, overlay: { ...draft.overlay, ...partial } })
   }
 
   function addStation(): void {
@@ -277,6 +297,106 @@ export function SettingsPage({ config, onConfigChanged }: Props): JSX.Element {
         </div>
       </Section>
 
+      <Section title="Recording Overlay">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="space-y-4">
+            <Field label="Enable Overlay">
+              <Toggle checked={draft.overlay.enabled} onChange={(v) => updateOverlay({ enabled: v })} />
+            </Field>
+
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+              {(
+                [
+                  ['showBarcode', 'Show Barcode'],
+                  ['showDate', 'Show Date'],
+                  ['showTime', 'Show Current Time'],
+                  ['showTimer', 'Show Recording Timer'],
+                  ['showStation', 'Show Packing Station'],
+                  ['showCamera', 'Show Camera Name']
+                ] as const
+              ).map(([key, label]) => (
+                <label key={key} className="flex items-center justify-between text-sm py-1">
+                  <span className="text-slate-400">{label}</span>
+                  <Toggle checked={draft.overlay[key]} onChange={(v) => updateOverlay({ [key]: v })} />
+                </label>
+              ))}
+            </div>
+
+            <Field label="Overlay Position">
+              <select
+                value={draft.overlay.position}
+                onChange={(e) => updateOverlay({ position: e.target.value as OverlayConfig['position'] })}
+                className="w-full bg-surface-800 border border-surface-600 rounded-lg px-3 py-2 text-sm"
+              >
+                <option value="top-left">Top Left</option>
+                <option value="top-right">Top Right</option>
+                <option value="bottom-left">Bottom Left</option>
+                <option value="bottom-right">Bottom Right</option>
+              </select>
+            </Field>
+
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Font Size">
+                <input
+                  type="number"
+                  min={10}
+                  max={72}
+                  value={draft.overlay.fontSize}
+                  onChange={(e) => updateOverlay({ fontSize: Number(e.target.value) })}
+                  className="w-full bg-surface-800 border border-surface-600 rounded-lg px-3 py-2 text-sm"
+                />
+              </Field>
+              <Field label="Background Opacity">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={draft.overlay.backgroundOpacity}
+                    onChange={(e) => updateOverlay({ backgroundOpacity: Number(e.target.value) })}
+                    className="w-full accent-accent-500"
+                  />
+                  <span className="text-xs text-slate-400 w-10 text-right">{draft.overlay.backgroundOpacity}%</span>
+                </div>
+              </Field>
+              <Field label="Font Color">
+                <input
+                  type="color"
+                  value={draft.overlay.fontColor}
+                  onChange={(e) => updateOverlay({ fontColor: e.target.value })}
+                  className="w-full h-9 bg-surface-800 border border-surface-600 rounded-lg cursor-pointer"
+                />
+              </Field>
+              <Field label="Background Color">
+                <input
+                  type="color"
+                  value={draft.overlay.backgroundColor}
+                  onChange={(e) => updateOverlay({ backgroundColor: e.target.value })}
+                  className="w-full h-9 bg-surface-800 border border-surface-600 rounded-lg cursor-pointer"
+                />
+              </Field>
+            </div>
+          </div>
+
+          <div>
+            <span className="block text-xs text-slate-500 mb-1">Live Preview</span>
+            <div className="relative aspect-video bg-surface-950 rounded-lg overflow-hidden border border-surface-700">
+              <OverlayPreview
+                config={draft.overlay}
+                data={{
+                  barcode: 'ORD240715001',
+                  date: previewNow.date,
+                  time: previewNow.time,
+                  timer: '00:02:45',
+                  station: draft.stations[0]?.name ?? 'Packing Station 1',
+                  camera: draft.stations[0]?.cameraName ?? 'EMEET S600 #1'
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      </Section>
+
       <Section title="Scanner assignment">
         <p className="text-sm text-slate-400">
           Pair physical scanners to stations from the <span className="text-slate-200">Device Pairing</span> tab -
@@ -403,6 +523,15 @@ function StationSettingsCard({
       </div>
     </div>
   )
+}
+
+function sampleClock(): { date: string; time: string } {
+  const now = new Date()
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return {
+    date: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`,
+    time: `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`
+  }
 }
 
 function SaveLocationStatusLine({
