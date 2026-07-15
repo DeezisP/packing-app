@@ -5,6 +5,7 @@
   "dbBackupEnabled": true,
   "dbBackupIntervalHours": 24,
   "activeStationId": "station-a",
+  "identifiedScanners": [],
   "stations": [
     {
       "id": "station-a",

@@ -6,6 +6,7 @@ import { UpdateAvailableModal } from '../components/dashboard/UpdateAvailableMod
 import { useBarcodeListener } from '../hooks/useBarcodeListener'
 import { useStationsState } from '../hooks/useStationsState'
 import { useUpdateState } from '../hooks/useUpdateState'
+import { useRawInputDevice } from '../hooks/useRawInputDevice'
 import type { AppConfig } from '../../electron/shared/types'
 
 interface Props {
@@ -33,11 +34,16 @@ export function DashboardPage({ config, onConfigChanged }: Props): JSX.Element {
     [onConfigChanged]
   )
 
+  const getLastRawInputDevice = useRawInputDevice()
   const handleScan = useCallback(
     (barcode: string) => {
-      window.electronAPI.barcode.scan(activeStationId, barcode)
+      // A scan from a scanner that's paired to a specific station always
+      // routes there (resolved main-process side), regardless of which
+      // station is "active" here - deviceId is just a hint, not a guarantee,
+      // so unpaired/unidentified scans still fall back to activeStationId.
+      window.electronAPI.barcode.scan(activeStationId, barcode, getLastRawInputDevice())
     },
-    [activeStationId]
+    [activeStationId, getLastRawInputDevice]
   )
   useBarcodeListener(handleScan, true)
 
@@ -60,7 +66,8 @@ export function DashboardPage({ config, onConfigChanged }: Props): JSX.Element {
         <div>
           <h1 className="text-lg font-semibold text-slate-100">Packing Stations</h1>
           <p className="text-sm text-slate-500">
-            Waiting for barcode... scans route to the active station. Press 1-{config.stations.length} to switch.
+            Waiting for barcode... paired scanners route automatically, unpaired ones use the active
+            station. Press 1-{config.stations.length} to switch.
           </p>
         </div>
         {updateAvailable && (

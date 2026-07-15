@@ -68,6 +68,7 @@ export function StationPanel({ station, state, isActive, hotkey, onSetActive }: 
 
       <div className="p-4 space-y-2">
         <Row label="Camera" value={station.cameraName ?? 'Not assigned'} />
+        <ScannerRow station={station} state={state} />
         <Row
           label="Barcode"
           value={state?.barcode ?? 'Waiting for barcode...'}
@@ -76,7 +77,38 @@ export function StationPanel({ station, state, isActive, hotkey, onSetActive }: 
         {status === 'error' && state?.lastError && (
           <div className="text-xs text-rec-500 bg-rec-500/10 rounded px-2 py-1.5">{state.lastError}</div>
         )}
+        {station.scannerDeviceId && state && !state.scannerConnected && (
+          <div className="text-xs text-warn-500 bg-warn-500/10 rounded px-2 py-1.5">
+            Paired scanner disconnected - this station can still be operated via the active-station
+            selector until it reconnects.
+          </div>
+        )}
       </div>
+    </div>
+  )
+}
+
+function ScannerRow({
+  station,
+  state
+}: {
+  station: StationConfig
+  state: StationRuntimeState | undefined
+}): JSX.Element {
+  if (!station.scannerDeviceId) {
+    return <Row label="Scanner" value="Not paired" />
+  }
+  const connected = state?.scannerConnected ?? false
+  return (
+    <div className="flex items-center justify-between text-sm">
+      <span className="text-slate-500">Scanner</span>
+      <span className="flex items-center gap-1.5 text-slate-300">
+        <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-ok-500' : 'bg-rec-500'}`} />
+        {state?.scannerName ?? 'Paired scanner'}
+        <span className={connected ? 'text-ok-500' : 'text-rec-500'}>
+          ({connected ? 'Connected' : 'Disconnected'})
+        </span>
+      </span>
     </div>
   )
 }

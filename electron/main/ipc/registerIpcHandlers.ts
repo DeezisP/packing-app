@@ -5,6 +5,8 @@ import { IPC } from '@shared/ipc-channels'
 import { configManager } from '../services/ConfigManager'
 import { database } from '../services/Database'
 import { cameraManager } from '../services/CameraManager'
+import { scannerManager } from '../services/ScannerManager'
+import { rawInputService } from '../services/RawInputService'
 import { stationManager } from '../services/StationManager'
 import { updateService } from '../services/UpdateService'
 import { logger } from '../services/Logger'
@@ -60,8 +62,8 @@ export function registerIpcHandlers(): void {
     configManager.update({ activeStationId: stationId })
   })
 
-  ipcMain.handle(IPC.barcodeScan, async (_e, stationId: string, barcode: string) => {
-    await stationManager.handleScan(stationId, barcode.trim())
+  ipcMain.handle(IPC.barcodeScan, async (_e, stationId: string, barcode: string, deviceId: string | null) => {
+    await stationManager.handleScan(stationId, barcode.trim(), deviceId ?? null)
   })
 
   ipcMain.handle(IPC.barcodeOpenExistingFolder, (_e, folderPath: string) => {
@@ -72,6 +74,8 @@ export function registerIpcHandlers(): void {
     const [video, audio] = await Promise.all([cameraManager.listVideoDevices(), cameraManager.listAudioDevices()])
     return { video, audio }
   })
+
+  ipcMain.handle(IPC.scannersList, () => scannerManager.listScanners())
 
   ipcMain.handle(IPC.recordingsSearch, (_e, filters: SearchFilters) => database.search(filters))
 
@@ -115,6 +119,8 @@ export function registerIpcHandlers(): void {
   stationManager.on('duplicateBarcode', (event) => broadcast(IPC.stationOnDuplicateBarcode, event))
   stationManager.on('saveLocationStatus', (status) => broadcast(IPC.configOnSaveLocationStatus, status))
   cameraManager.on('changed', (payload) => broadcast(IPC.cameraOnListChanged, payload))
+  scannerManager.on('changed', (devices) => broadcast(IPC.scannersOnListChanged, devices))
+  rawInputService.on('keydown', (payload) => broadcast(IPC.scannersOnRawKeydown, payload))
   logger.on('entry', (entry) => broadcast(IPC.systemOnLogEntry, entry))
   updateService.on('stateChanged', (state) => broadcast(IPC.updateOnStateChanged, state))
 }

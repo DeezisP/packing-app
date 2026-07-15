@@ -279,21 +279,21 @@ export function SettingsPage({ config, onConfigChanged }: Props): JSX.Element {
 
       <Section title="Scanner assignment">
         <p className="text-sm text-slate-400">
-          Most USB barcode scanners cannot be individually distinguished from a regular keyboard by Windows
-          applications. Instead, use the <span className="text-slate-200">active station selector</span> on the
-          Dashboard (click a panel, or press 1-{draft.stations.length}) before scanning at that station. If your
-          scanners expose a stable hardware ID, you may record it below for your own reference.
+          Pair physical scanners to stations from the <span className="text-slate-200">Device Pairing</span> tab -
+          it identifies each USB scanner individually (via Windows Raw Input) and lets you assign it with a
+          dropdown, including an Identify Scanner button for when multiple identical scanners are connected.
+          A scan from a paired scanner always routes to its assigned station automatically. Any station without a
+          paired scanner still falls back to the active-station selector on the Dashboard (click a panel, or
+          press 1-{draft.stations.length}).
         </p>
-        <div className="space-y-3 mt-4">
+        <div className="mt-4 space-y-2 text-sm">
           {draft.stations.map((station) => (
-            <Field key={station.id} label={station.name}>
-              <input
-                value={station.scannerDeviceId ?? ''}
-                onChange={(e) => updateStation(station.id, { scannerDeviceId: e.target.value || null })}
-                placeholder="Optional scanner identifier"
-                className="w-full bg-surface-800 border border-surface-600 rounded-lg px-3 py-2 text-sm"
-              />
-            </Field>
+            <div key={station.id} className="flex items-center justify-between">
+              <span className="text-slate-500">{station.name}</span>
+              <span className="text-slate-300 font-mono text-xs">
+                {station.scannerDeviceId ?? 'Not paired'}
+              </span>
+            </div>
           ))}
         </div>
       </Section>

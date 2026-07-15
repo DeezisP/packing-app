@@ -23,29 +23,63 @@ Every packing station (Dashboard panel) has its own independent camera, timer, a
 process - Station A and Station B can record two different barcodes at the same time without
 interfering with each other.
 
-Windows cannot reliably tell two "keyboard-emulating" USB barcode scanners apart from application
-code (they all show up as generic HID keyboards). Because of that, PackingRecorder uses the
-approach the spec explicitly allows as a fallback: an **active station selector**. Click a
-station panel (or press `1`-`9`) to make it active; the next barcode scanned anywhere on the
-keyboard is routed to that station. `StationConfig.scannerDeviceId` in `config.json` is kept as a
-free-text field if you want to note which physical scanner belongs to which station for your own
-records.
+Windows normally can't tell two "keyboard-emulating" USB barcode scanners apart - they all show up
+as generic HID keyboards, and by the time a keystroke reaches a browser/Electron window it has
+already lost any notion of which physical device sent it. PackingRecorder works around that using
+**Windows Raw Input** (`WM_INPUT`) to identify individual HID devices at the OS level - see
+"Device Pairing" below. A scan from a scanner paired to a station routes straight there
+automatically, regardless of which station is currently "active." Any station without a paired
+scanner (or if Raw Input can't be used for some reason - see Known limitations) falls back to the
+**active station selector**: click a panel (or press `1`-`9`) to make it active, then the next
+scan anywhere routes there.
+
+## Device Pairing
+
+Open the **Device Pairing** tab to identify physical scanners individually and assign each one to
+a station:
+
+1. Click **+ Identify Scanner**, then scan any barcode on the physical scanner you want to add.
+   PackingRecorder detects which physical USB device that scan came from (via Raw Input, not just
+   "a keystroke happened") and prompts you to name it - e.g. "Packing Table 1", "Left Scanner".
+   Scanning again on an already-identified scanner lets you rename it instead of adding a
+   duplicate.
+2. Each identified scanner shows as a card with its name, live Connected/Disconnected status, and
+   a dropdown to assign it to a station. The underlying Windows device path is hidden by default -
+   click **Advanced** on a card to see it (useful for troubleshooting, never needed day-to-day).
+3. The **Cameras** section lists every detected webcam with a **Test Camera** button that opens a
+   live preview - handy for confirming you've got the right camera before assigning it to a
+   station in Settings.
+
+Only scanners you've explicitly identified this way ever appear here - other HID devices (mice,
+headsets, webcam volume controls, etc.) are never shown, even though Windows reports all of them
+under similar device classes internally.
+
+Pairings are stored in `config.json` under `identifiedScanners` (id + your chosen name) and each
+station's `scannerDeviceId` (which scanner, if any, is assigned to it) - both update immediately,
+no manual file editing needed, and changes apply without restarting the app.
+
+If a paired scanner or camera disconnects, only *that station* shows a warning - the other
+stations keep recording and operating normally. A station with a disconnected scanner can still be
+operated via the active-station selector in the meantime.
 
 ## Technology
 
 Electron + React + TypeScript + Tailwind CSS + SQLite (`sql.js`, a pure WebAssembly build - no
-native compilation required) + FFmpeg (`ffmpeg-static`, bundled) + electron-builder. No Express,
-no Next.js, no Docker, no cloud services - everything ships and runs inside this folder.
+native compilation required) + FFmpeg (`ffmpeg-static`, bundled) + [`koffi`](https://koffi.dev)
+(a prebuilt-binary FFI library used only for the handful of `user32.dll` Raw Input calls behind
+Device Pairing - no native compilation needed there either) + electron-builder. No Express, no
+Next.js, no Docker, no cloud services - everything ships and runs inside this folder.
 
 ## Folder structure
 
 ```
 PackingRecorder/
   electron/
-    main/            Main process: services (config, db, camera, recording, logging), IPC, windows
+    main/            Main process: services (config, db, camera, scanner, raw input, recording,
+                     logging), IPC, windows
     preload/          contextBridge API exposed to the renderer
     shared/            Types & IPC channel names shared by main + renderer
-  src/                 React renderer (Dashboard, Search, Settings, video player)
+  src/                 React renderer (Dashboard, Search, Device Pairing, Settings, video player)
   public/              Static assets copied as-is into the renderer build
   build/
     icon.ico             App icon used by electron-builder (installer, .exe, Start Menu/Desktop
@@ -260,8 +294,12 @@ PackingRecorder will offer it as an update the next time it checks.
 
 ## Known limitations
 
-- **Per-scanner routing** is not implemented at the OS/HID level (see "Scanner routing" above) -
-  the active-station selector is used instead, exactly as the spec allows as a fallback.
+- **Raw Input scanner identification is Windows-only** and requires the `RegisterRawInputDevices`
+  call to succeed at startup - it does on any normal desktop session. If it ever fails (e.g. a
+  heavily locked-down environment), Device Pairing's Identify Scanner will report "could not
+  detect which physical scanner sent that scan" and every station simply falls back to the
+  active-station selector, exactly as if no scanner had been paired - recording is never blocked
+  by this.
 - **Light theme** is a functional but minimal palette swap (Settings → Theme); the app is
   designed dark-first.
 - **Code signing**: the installer is not code-signed. Windows SmartScreen may warn on first

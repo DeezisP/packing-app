@@ -34,6 +34,15 @@ export interface StationConfig {
 
 export type ThemeMode = 'dark' | 'light'
 
+/** A scanner the operator has explicitly confirmed via the Identify Scanner
+ *  workflow - the Device Pairing page only ever shows devices from this list,
+ *  never the raw HID device enumeration (which includes mice, headsets,
+ *  webcam controls, and other irrelevant peripherals). */
+export interface IdentifiedScanner {
+  id: string
+  name: string
+}
+
 export interface AppConfig {
   saveLocation: string
   theme: ThemeMode
@@ -42,6 +51,7 @@ export interface AppConfig {
   dbBackupEnabled: boolean
   dbBackupIntervalHours: number
   activeStationId: string
+  identifiedScanners: IdentifiedScanner[]
 }
 
 export type RecordingStatus = 'recording' | 'completed' | 'interrupted' | 'error'
@@ -81,9 +91,20 @@ export interface StationRuntimeState {
   barcode: string | null
   cameraName: string | null
   cameraConnected: boolean
+  scannerName: string | null
+  scannerConnected: boolean
   startedAt: string | null
   elapsedSeconds: number
   lastError: string | null
+}
+
+/** A physical USB HID keyboard-class device (barcode scanners register with
+ *  Windows this way). `id` is a stable, normalized PnP Instance ID - the same
+ *  value used for StationConfig.scannerDeviceId. */
+export interface ScannerDevice {
+  id: string
+  name: string
+  connected: boolean
 }
 
 export interface WrongBarcodeEvent {

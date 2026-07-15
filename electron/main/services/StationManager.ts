@@ -5,6 +5,7 @@ import { configManager } from './ConfigManager'
 import { database } from './Database'
 import { recordingEngine } from './RecordingEngine'
 import { cameraManager } from './CameraManager'
+import { scannerManager } from './ScannerManager'
 import { getDiskUsage, CRITICAL_DISK_STOP_BYTES } from './DiskMonitor'
 import { validateSaveLocation } from './SaveLocationValidator'
 import { logger } from './Logger'
@@ -15,6 +16,7 @@ import type {
   DuplicateBarcodeEvent,
   StationConfig,
   CameraDevice,
+  ScannerDevice,
   SaveLocationStatus
 } from '@shared/types'
 
@@ -40,12 +42,15 @@ class StationManager extends EventEmitter {
 
   init(): void {
     for (const station of configManager.get().stations) {
+      const scanner = resolveScannerDisplay(station)
       this.states.set(station.id, {
         stationId: station.id,
         status: 'idle',
         barcode: null,
         cameraName: station.cameraName,
         cameraConnected: false,
+        scannerName: scanner.name,
+        scannerConnected: scanner.connected,
         startedAt: null,
         elapsedSeconds: 0,
         lastError: null,
@@ -72,6 +77,25 @@ class StationManager extends EventEmitter {
             logger.info('Camera reconnected', { stationId, camera: state.cameraName })
           } else {
             logger.warn('Camera disconnected', { stationId, camera: state.cameraName })
+          }
+        }
+      }
+    })
+
+    scannerManager.on('changed', () => {
+      for (const [stationId] of this.states) {
+        const station = this.getStationConfig(stationId)
+        if (!station) continue
+        const scanner = resolveScannerDisplay(station)
+        const state = this.states.get(stationId)!
+        if (scanner.connected !== state.scannerConnected || scanner.name !== state.scannerName) {
+          this.setState(stationId, { scannerName: scanner.name, scannerConnected: scanner.connected })
+          if (station.scannerDeviceId) {
+            if (scanner.connected) {
+              logger.info('Paired scanner reconnected', { stationId, scanner: scanner.name })
+            } else {
+              logger.warn('Paired scanner disconnected', { stationId, scanner: scanner.name })
+            }
           }
         }
       }
@@ -124,6 +148,7 @@ class StationManager extends EventEmitter {
     const remainingIds = new Set(this.states.keys())
 
     for (const station of stations) {
+      const scanner = resolveScannerDisplay(station)
       if (!this.states.has(station.id)) {
         this.states.set(station.id, {
           stationId: station.id,
@@ -131,6 +156,8 @@ class StationManager extends EventEmitter {
           barcode: null,
           cameraName: station.cameraName,
           cameraConnected: false,
+          scannerName: scanner.name,
+          scannerConnected: scanner.connected,
           startedAt: null,
           elapsedSeconds: 0,
           lastError: null,
@@ -139,7 +166,11 @@ class StationManager extends EventEmitter {
         })
         this.emit('stateChanged', this.publicState(station.id))
       } else {
-        this.setState(station.id, { cameraName: station.cameraName })
+        this.setState(station.id, {
+          cameraName: station.cameraName,
+          scannerName: scanner.name,
+          scannerConnected: scanner.connected
+        })
       }
       remainingIds.delete(station.id)
     }
@@ -216,7 +247,20 @@ class StationManager extends EventEmitter {
     this.emit('stateChanged', this.publicState(stationId))
   }
 
-  async handleScan(stationId: string, barcode: string): Promise<void> {
+  /** Resolves which station a scan actually belongs to. A scan from a
+   *  physical scanner that's paired (via Raw Input device identification) to
+   *  a specific station always wins, regardless of which station happens to
+   *  be "active" in the UI. Unpaired/unidentified scans (deviceId is null -
+   *  e.g. Raw Input unavailable, or the scanner hasn't been paired yet) fall
+   *  back to the requested (active) station exactly as before. */
+  private resolveTargetStationId(requestedStationId: string, deviceId: string | null): string {
+    if (!deviceId) return requestedStationId
+    const paired = configManager.get().stations.find((s) => s.scannerDeviceId === deviceId)
+    return paired ? paired.id : requestedStationId
+  }
+
+  async handleScan(requestedStationId: string, barcode: string, deviceId: string | null = null): Promise<void> {
+    const stationId = this.resolveTargetStationId(requestedStationId, deviceId)
     const state = this.states.get(stationId)
     const station = this.getStationConfig(stationId)
     if (!state || !station) {
@@ -340,6 +384,17 @@ class StationManager extends EventEmitter {
     if (this.tickTimer) clearInterval(this.tickTimer)
     if (this.saveLocationHealthTimer) clearInterval(this.saveLocationHealthTimer)
     recordingEngine.killAll()
+  }
+}
+
+function resolveScannerDisplay(station: StationConfig): { name: string | null; connected: boolean } {
+  if (!station.scannerDeviceId) return { name: null, connected: false }
+  const identified = configManager.get().identifiedScanners.find((s) => s.id === station.scannerDeviceId)
+  const devices = scannerManager.getLastKnownDevices()
+  const match = devices.find((d: ScannerDevice) => d.id === station.scannerDeviceId)
+  return {
+    name: identified?.name ?? match?.name ?? 'Paired scanner',
+    connected: match?.connected ?? false
   }
 }
 

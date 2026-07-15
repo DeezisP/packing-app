@@ -8,6 +8,8 @@ import { configManager } from './services/ConfigManager'
 import { logger } from './services/Logger'
 import { database } from './services/Database'
 import { cameraManager } from './services/CameraManager'
+import { scannerManager } from './services/ScannerManager'
+import { rawInputService } from './services/RawInputService'
 import { stationManager } from './services/StationManager'
 import { recordingEngine } from './services/RecordingEngine'
 import { updateService } from './services/UpdateService'
@@ -44,6 +46,7 @@ if (!singleInstanceLock) {
 
     stationManager.init()
     cameraManager.startPolling()
+    scannerManager.startPolling()
     registerMediaProtocol()
     registerIpcHandlers()
 
@@ -58,7 +61,10 @@ if (!singleInstanceLock) {
       }, AUTO_UPDATE_CHECK_DELAY_MS)
     }
 
-    createMainWindow()
+    const mainWindow = createMainWindow()
+    // Raw Input registration needs a real native window handle, so this can
+    // only happen after the window exists - unlike the other services above.
+    rawInputService.init(mainWindow)
 
     app.on('browser-window-created', (_e, window) => {
       optimizer.watchWindowShortcuts(window)

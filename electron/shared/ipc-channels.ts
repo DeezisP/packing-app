@@ -25,6 +25,11 @@ export const IPC = {
   camerasList: 'cameras:list',
   cameraOnListChanged: 'cameras:onListChanged',
 
+  // Scanners / device pairing
+  scannersList: 'scanners:list',
+  scannersOnListChanged: 'scanners:onListChanged',
+  scannersOnRawKeydown: 'scanners:onRawKeydown',
+
   // Database / recordings
   recordingsSearch: 'recordings:search',
   recordingsGetRecent: 'recordings:getRecent',

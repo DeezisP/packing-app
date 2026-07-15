@@ -8,6 +8,7 @@ import type {
   WrongBarcodeEvent,
   DuplicateBarcodeEvent,
   CameraDevice,
+  ScannerDevice,
   SystemStatusInfo,
   LogEntry,
   SaveLocationStatus,
@@ -60,7 +61,8 @@ const api = {
     }
   },
   barcode: {
-    scan: (stationId: string, barcode: string): Promise<void> => ipcRenderer.invoke(IPC.barcodeScan, stationId, barcode),
+    scan: (stationId: string, barcode: string, deviceId: string | null = null): Promise<void> =>
+      ipcRenderer.invoke(IPC.barcodeScan, stationId, barcode, deviceId),
     openExistingFolder: (folderPath: string): Promise<void> =>
       ipcRenderer.invoke(IPC.barcodeOpenExistingFolder, folderPath)
   },
@@ -72,6 +74,24 @@ const api = {
       ipcRenderer.on(IPC.cameraOnListChanged, listener)
       return (): void => {
         ipcRenderer.removeListener(IPC.cameraOnListChanged, listener)
+      }
+    }
+  },
+  scanners: {
+    list: (): Promise<ScannerDevice[]> => ipcRenderer.invoke(IPC.scannersList),
+    onListChanged: (cb: (devices: ScannerDevice[]) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, devices: ScannerDevice[]): void => cb(devices)
+      ipcRenderer.on(IPC.scannersOnListChanged, listener)
+      return (): void => {
+        ipcRenderer.removeListener(IPC.scannersOnListChanged, listener)
+      }
+    },
+    onRawKeydown: (cb: (payload: { deviceId: string | null; timestamp: number }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, payload: { deviceId: string | null; timestamp: number }): void =>
+        cb(payload)
+      ipcRenderer.on(IPC.scannersOnRawKeydown, listener)
+      return (): void => {
+        ipcRenderer.removeListener(IPC.scannersOnRawKeydown, listener)
       }
     }
   },

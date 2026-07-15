@@ -2,15 +2,17 @@ import { useEffect, useState } from 'react'
 import { DashboardPage } from './pages/DashboardPage'
 import { SearchPage } from './pages/SearchPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { DevicePairingPage } from './pages/DevicePairingPage'
 import { BottomPanel } from './components/common/BottomPanel'
 import { SaveLocationWarningBanner } from './components/common/SaveLocationWarningBanner'
 import type { AppConfig } from '../electron/shared/types'
 
-type Tab = 'dashboard' | 'search' | 'settings'
+type Tab = 'dashboard' | 'search' | 'devices' | 'settings'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'search', label: 'Search' },
+  { id: 'devices', label: 'Device Pairing' },
   { id: 'settings', label: 'Settings' }
 ]
 
@@ -55,6 +57,7 @@ export default function App(): JSX.Element {
 
       {tab === 'dashboard' && <DashboardPage config={config} onConfigChanged={setConfig} />}
       {tab === 'search' && <SearchPage config={config} />}
+      {tab === 'devices' && <DevicePairingPage config={config} onConfigChanged={setConfig} />}
       {tab === 'settings' && <SettingsPage config={config} onConfigChanged={setConfig} />}
 
       <BottomPanel />

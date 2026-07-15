@@ -37,3 +37,4 @@ nsis:
   installerHeaderIcon: build/icon.ico
 asarUnpack:
   - node_modules/sql.js/dist/sql-wasm.wasm
+  - node_modules/@koromix/koffi-win32-x64/win32_x64/koffi.node
