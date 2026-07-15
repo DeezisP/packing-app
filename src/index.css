@@ -1,0 +1,60 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --surface-950: 10 11 15;
+  --surface-900: 17 19 24;
+  --surface-850: 22 25 34;
+  --surface-800: 27 31 42;
+  --surface-700: 36 41 56;
+  --surface-600: 51 58 79;
+}
+
+:root.light {
+  --surface-950: 244 245 247;
+  --surface-900: 255 255 255;
+  --surface-850: 248 249 251;
+  --surface-800: 237 239 243;
+  --surface-700: 220 224 231;
+  --surface-600: 196 202 214;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply antialiased;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-surface-900;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-surface-600 rounded-full;
+  }
+}
+
+@layer components {
+  .rec-dot {
+    @apply w-2.5 h-2.5 rounded-full bg-rec-500;
+    animation: pulse-rec 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse-rec {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
+  }
+}

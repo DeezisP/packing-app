@@ -1,0 +1,17 @@
+node_modules/
+out/
+release/
+dist/
+*.log
+*.tsbuildinfo
+Videos/*
+!Videos/.gitkeep
+Logs/*
+!Logs/.gitkeep
+database.sqlite
+database.sqlite-journal
+database.sqlite-wal
+database.sqlite-shm
+config.json
+.DS_Store
+Thumbs.db

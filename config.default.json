@@ -1,0 +1,30 @@
+{
+  "saveLocation": "Videos",
+  "theme": "dark",
+  "autoStartWindows": false,
+  "dbBackupEnabled": true,
+  "dbBackupIntervalHours": 24,
+  "activeStationId": "station-a",
+  "stations": [
+    {
+      "id": "station-a",
+      "name": "Packing Station A",
+      "cameraName": null,
+      "micName": null,
+      "resolutionPreset": "1080p",
+      "fps": 30,
+      "bitrateKbps": 8000,
+      "scannerDeviceId": null
+    },
+    {
+      "id": "station-b",
+      "name": "Packing Station B",
+      "cameraName": null,
+      "micName": null,
+      "resolutionPreset": "1080p",
+      "fps": 30,
+      "bitrateKbps": 8000,
+      "scannerDeviceId": null
+    }
+  ]
+}
