@@ -176,9 +176,18 @@ NSIS installer" message instead of failing silently. If GitHub itself is unreach
 
 1. Bump `"version"` in `package.json` (e.g. `1.0.0` → `1.1.0`). This is the single source of truth
    for the version electron-updater compares against - nothing else needs editing.
-2. Build and publish directly to GitHub in one step (requires a
-   [GitHub personal access token](https://github.com/settings/tokens) with `repo` scope). Two ways
-   to provide it, pick whichever fits your workflow:
+2. Build and publish directly to GitHub in one step. This requires a personal access token with
+   write access to Releases on this repo:
+
+   - **Fine-grained token** (github.com/settings/personal-access-tokens/new, recommended): set
+     Repository access to this repo, then under Permissions → Repository permissions set
+     **Contents: Read and write**. This is the permission that actually covers creating releases -
+     GitHub's 403 error on a missing/wrong permission here reads
+     `Resource not accessible by personal access token`, which is easy to mistake for an auth
+     problem instead of a missing-permission one.
+   - **Classic token** (github.com/settings/tokens/new): just check the **`repo`** scope.
+
+   Two ways to provide whichever token you generate, pick whichever fits your workflow:
 
    - **`.env` file (persists locally, never committed)** - copy `.env.example` to `.env` and fill
      in `GH_TOKEN=<your token>`. `.env` is gitignored, so it never leaves your machine. Then just:
