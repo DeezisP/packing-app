@@ -177,16 +177,31 @@ NSIS installer" message instead of failing silently. If GitHub itself is unreach
 1. Bump `"version"` in `package.json` (e.g. `1.0.0` → `1.1.0`). This is the single source of truth
    for the version electron-updater compares against - nothing else needs editing.
 2. Build and publish directly to GitHub in one step (requires a
-   [GitHub personal access token](https://github.com/settings/tokens) with `repo` scope):
+   [GitHub personal access token](https://github.com/settings/tokens) with `repo` scope). Two ways
+   to provide it, pick whichever fits your workflow:
 
-   ```powershell
-   $env:GH_TOKEN = "<your token>"
-   npm run release
-   ```
+   - **`.env` file (persists locally, never committed)** - copy `.env.example` to `.env` and fill
+     in `GH_TOKEN=<your token>`. `.env` is gitignored, so it never leaves your machine. Then just:
 
-   This runs `electron-builder --win --publish always`, which builds the installer and uploads
-   `PackingRecorder-Setup-<version>.exe`, its `.blockmap`, and `latest.yml` straight to a new
-   **draft** GitHub Release matching the `package.json` version. Open the draft on GitHub, add
+     ```powershell
+     npm run release
+     ```
+
+     `npm run release` loads `.env` automatically via `dotenv-cli` before running
+     `electron-builder`.
+
+   - **Shell environment variable (one-off, nothing written to disk)**:
+
+     ```powershell
+     $env:GH_TOKEN = "<your token>"
+     npm run release
+     ```
+
+     A shell-level `$env:GH_TOKEN` takes precedence over `.env` if both are set.
+
+   Either way this runs `electron-builder --win --publish always`, which builds the installer and
+   uploads `PackingRecorder-Setup-<version>.exe`, its `.blockmap`, and `latest.yml` straight to a
+   new **draft** GitHub Release matching the `package.json` version. Open the draft on GitHub, add
    release notes (they show up verbatim in the app's Settings → Updates panel), and publish it.
 
 3. **Or**, if you'd rather not hand out a token on a build machine: run `npm run dist` locally,
