@@ -17,6 +17,7 @@ import { validateSaveLocation, createSaveLocationFolder } from '../services/Save
 import { defaultPaths, resolveSaveLocation } from '../services/PathService'
 import { resolveFfmpegPath } from '../services/FfmpegLocator'
 import { listWindowsCameras } from '../services/WindowsDeviceService'
+import { checkFileForPlayback } from '../services/MediaProtocol'
 import { API_KEY_PLACEHOLDER } from '@shared/types'
 import type { AppConfig, SearchFilters, DiagnosticsStationAssignment, LogEntry } from '@shared/types'
 
@@ -219,6 +220,12 @@ export function registerIpcHandlers(): void {
     database.deleteRecord(id)
     logger.info('Recording deleted', { id, barcode: record.barcode, folder })
     return { success: true, error: null }
+  })
+
+  ipcMain.handle(IPC.recordingsCheckForPlayback, (_e, videoPath: string) => {
+    const result = checkFileForPlayback(videoPath)
+    logger.info('Playback stage: pre-flight file check', { videoPath, ...result })
+    return result
   })
 
   ipcMain.handle(IPC.recordingsBackupDatabase, async () => {

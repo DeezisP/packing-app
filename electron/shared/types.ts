@@ -524,6 +524,22 @@ export interface DeleteRecordingResult {
   error: string | null
 }
 
+/** Cheap pre-flight file-access check run before the built-in player loads
+ *  a recording - existence/readability/lock/signature only, no decoding
+ *  (that already happened once at recording-stop time, see
+ *  RecordingEngine.verifyRecording). Lets the player show a specific,
+ *  correct error ("file was moved", "file is locked by another program")
+ *  instead of a generic "cannot play video" when something's actually wrong
+ *  with the file itself, as opposed to the player implementation. */
+export interface PlaybackPreflightResult {
+  exists: boolean
+  readable: boolean
+  locked: boolean
+  sizeBytes: number
+  looksLikeValidMp4: boolean
+  error: string | null
+}
+
 /** Snapshot of the external-API scan queue's health, for the Settings page -
  *  see ApiQueueService/Database's api_queue table. */
 export interface ApiQueueStatus {

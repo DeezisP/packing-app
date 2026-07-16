@@ -49,6 +49,7 @@ export const IPC = {
   recordingsOpenFolder: 'recordings:openFolder',
   recordingsDelete: 'recordings:delete',
   recordingsBackupDatabase: 'recordings:backupDatabase',
+  recordingsCheckForPlayback: 'recordings:checkForPlayback',
 
   // System
   systemGetStatus: 'system:getStatus',

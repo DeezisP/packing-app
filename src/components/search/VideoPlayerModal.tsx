@@ -18,26 +18,56 @@ export function VideoPlayerModal({ recording, onClose }: Props): JSX.Element {
   const [duration, setDuration] = useState(0)
   const [playbackError, setPlaybackError] = useState<string | null>(null)
 
-  useEffect(() => {
-    window.electronAPI.system.log('info', 'Playback stage: initializing player', {
+  function logVideoState(event: string, extra?: Record<string, unknown>): void {
+    const v = videoRef.current
+    window.electronAPI.system.log('info', `Playback stage: video event - ${event}`, {
       recordingId: recording.id,
       barcode: recording.barcode,
-      videoPath: recording.videoPath,
-      status: recording.status
+      readyState: v?.readyState ?? null,
+      currentSrc: v?.currentSrc ?? null,
+      ...extra
     })
+  }
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function preflight(): Promise<void> {
+      window.electronAPI.system.log('info', 'Playback stage: initializing player', {
+        recordingId: recording.id,
+        barcode: recording.barcode,
+        videoPath: recording.videoPath,
+        generatedUrl: recording.videoUrl,
+        status: recording.status
+      })
+      const result = await window.electronAPI.recordings.checkForPlayback(recording.videoPath)
+      if (cancelled) return
+      window.electronAPI.system.log('info', 'Playback stage: pre-flight file check result', {
+        recordingId: recording.id,
+        videoPath: recording.videoPath,
+        exists: result.exists,
+        readable: result.readable,
+        locked: result.locked,
+        sizeBytes: result.sizeBytes,
+        looksLikeValidMp4: result.looksLikeValidMp4
+      })
+      if (result.error) {
+        setPlaybackError(result.error)
+      }
+    }
+
+    preflight()
     window.electronAPI.recordings.markViewed(recording.id)
+    return () => {
+      cancelled = true
+    }
   }, [recording.id])
 
   function handleVideoError(): void {
     const mediaError = videoRef.current?.error
     const message = mediaError ? mediaErrorMessage(mediaError.code) : 'ไม่สามารถเล่นวิดีโอได้'
     setPlaybackError(message)
-    window.electronAPI.system.log('warn', 'Playback stage: video element failed to load', {
-      recordingId: recording.id,
-      barcode: recording.barcode,
-      videoPath: recording.videoPath,
-      mediaErrorCode: mediaError?.code ?? null
-    })
+    logVideoState('error', { errorCode: mediaError?.code ?? null, errorMessage: mediaError?.message || message })
   }
 
   useEffect(() => {
@@ -121,10 +151,28 @@ export function VideoPlayerModal({ recording, onClose }: Props): JSX.Element {
             ref={videoRef}
             src={recording.videoUrl}
             className="w-full bg-black max-h-[60vh]"
-            onPlay={() => setPlaying(true)}
-            onPause={() => setPlaying(false)}
+            onLoadStart={() => logVideoState('loadstart')}
+            onLoadedMetadata={(e) => {
+              setDuration(e.currentTarget.duration)
+              logVideoState('loadedmetadata', { duration: e.currentTarget.duration })
+            }}
+            onLoadedData={() => logVideoState('loadeddata')}
+            onCanPlay={() => logVideoState('canplay')}
+            onCanPlayThrough={() => logVideoState('canplaythrough')}
+            onPlay={() => {
+              setPlaying(true)
+              logVideoState('play')
+            }}
+            onPlaying={() => logVideoState('playing')}
+            onPause={() => {
+              setPlaying(false)
+              logVideoState('pause')
+            }}
+            onWaiting={() => logVideoState('waiting')}
+            onStalled={() => logVideoState('stalled')}
+            onSuspend={() => logVideoState('suspend')}
+            onEnded={() => logVideoState('ended')}
             onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-            onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
             onError={handleVideoError}
           />
           {playbackError && (

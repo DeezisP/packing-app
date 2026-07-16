@@ -20,7 +20,8 @@ import type {
   CameraCapabilityOption,
   ApiQueueStatus,
   WarehouseApiConfig,
-  WarehouseApiTestResult
+  WarehouseApiTestResult,
+  PlaybackPreflightResult
 } from '@shared/types'
 
 const api = {
@@ -142,6 +143,8 @@ const api = {
     markViewed: (id: number): Promise<void> => ipcRenderer.invoke(IPC.recordingsMarkViewed, id),
     openFolder: (videoPath: string): Promise<void> => ipcRenderer.invoke(IPC.recordingsOpenFolder, videoPath),
     delete: (id: number): Promise<DeleteRecordingResult> => ipcRenderer.invoke(IPC.recordingsDelete, id),
+    checkForPlayback: (videoPath: string): Promise<PlaybackPreflightResult> =>
+      ipcRenderer.invoke(IPC.recordingsCheckForPlayback, videoPath),
     backupDatabase: (): Promise<string> => ipcRenderer.invoke(IPC.recordingsBackupDatabase)
   },
   system: {
