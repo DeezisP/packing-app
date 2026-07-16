@@ -1,6 +1,61 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CameraDevice } from '../../electron/shared/types'
 
+/** Chromium redacts every device's `label` (and gives every device the same
+ *  unstable placeholder `deviceId`) in `enumerateDevices()` until the current
+ *  page has completed at least one actually-granted `getUserMedia()` call -
+ *  an Electron `setPermissionRequestHandler`/`setPermissionCheckHandler` that
+ *  auto-approves media does NOT by itself unlock this; Chromium still waits
+ *  for a real capture grant to have happened in this session. Confirmed via
+ *  this app's own diagnostic logging: on a fresh window, the very first
+ *  `enumerateDevices()` call returns 0 labeled matches for a target camera
+ *  name that is definitely connected. Call once, lazily, before the first
+ *  real attach; safe to call repeatedly - once unlocked it stays unlocked
+ *  for the life of the renderer. */
+let labelsUnlocked = false
+async function ensureDeviceLabelsUnlocked(): Promise<void> {
+  if (labelsUnlocked) return
+  const before = await navigator.mediaDevices.enumerateDevices()
+  const needsPrimer = before.some((d) => d.kind === 'videoinput' && !d.label)
+  window.electronAPI.system.log('info', 'Preview stage: label-unlock check', {
+    needsPrimer,
+    videoInputCount: before.filter((d) => d.kind === 'videoinput').length,
+    labels: before.filter((d) => d.kind === 'videoinput').map((d) => d.label)
+  })
+  if (needsPrimer) {
+    try {
+      const primer = await navigator.mediaDevices.getUserMedia({ video: true })
+      primer.getTracks().forEach((t) => t.stop())
+      const after = await navigator.mediaDevices.enumerateDevices()
+      window.electronAPI.system.log('info', 'Preview stage: label-unlock primer result', {
+        labels: after.filter((d) => d.kind === 'videoinput').map((d) => d.label)
+      })
+    } catch (err) {
+      window.electronAPI.system.log('warn', 'Preview stage: label-unlock primer failed', {
+        error: (err as Error).message
+      })
+    }
+  }
+  labelsUnlocked = true
+}
+
+/** Chromium's camera label is not always exactly the DirectShow friendly
+ *  name ffmpeg reports: once it can see there are multiple devices sharing a
+ *  name, it appends a `" (vendorId:productId)"` suffix to help JS-side
+ *  disambiguation, e.g. ffmpeg's `"EMEET SmartCam S600"` shows up from
+ *  Chromium as `"EMEET SmartCam S600 (328f:00e6)"`. A strict `===` against
+ *  ffmpeg's plain name therefore matches nothing at all (confirmed via this
+ *  app's own diagnostic logging: chromiumMatchCount stayed 0 even after
+ *  labels were unlocked) - and both identical-model cameras get the *same*
+ *  suffix (same vendor/product id), so it doesn't finish the disambiguation
+ *  by itself either. Matching on a name-boundary prefix handles both: it
+ *  still requires the base name to match exactly (not just contain it
+ *  anywhere), so it can't accidentally match an unrelated device whose name
+ *  happens to start the same way. */
+function labelMatchesCameraName(label: string, name: string): boolean {
+  return label === name || label.startsWith(`${name} (`)
+}
+
 /** Attaches a live getUserMedia preview for a specific camera, identified by
  *  its unique `id` (ffmpeg's DirectShow device path) rather than its
  *  friendly name - two identical camera models report the exact same
@@ -45,8 +100,11 @@ export function useCameraPreview(
 
     async function attach(): Promise<void> {
       try {
+        await ensureDeviceLabelsUnlocked()
+        if (cancelled) return
+
         const devices = await navigator.mediaDevices.enumerateDevices()
-        const matches = devices.filter((d) => d.kind === 'videoinput' && d.label === target!.name)
+        const matches = devices.filter((d) => d.kind === 'videoinput' && labelMatchesCameraName(d.label, target!.name))
         const match = matches[occurrence] ?? matches[0]
 
         window.electronAPI.system.log('info', 'Preview stage: attaching camera', {
@@ -54,7 +112,8 @@ export function useCameraPreview(
           cameraName: target!.name,
           occurrence,
           chromiumDeviceId: match?.deviceId ?? null,
-          chromiumMatchCount: matches.length
+          chromiumMatchCount: matches.length,
+          chromiumAllDeviceIds: matches.map((m) => m.deviceId)
         })
 
         stream = await navigator.mediaDevices.getUserMedia({

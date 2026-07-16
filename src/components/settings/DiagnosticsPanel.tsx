@@ -11,7 +11,7 @@ interface ChromiumCamera {
   label: string
 }
 
-type TestState = { status: 'idle' | 'testing' | 'passed' | 'failed'; error?: string }
+type TestState = { status: 'idle' | 'testing' | 'passed' | 'failed'; error?: string; ffmpegCommand?: string }
 
 interface Props {
   cameras: CameraDevice[]
@@ -82,7 +82,11 @@ export function DiagnosticsPanel({ cameras, cameraDisplayNames, stations, onTest
     const result = await window.electronAPI.diagnostics.testRecording(camera.id, micName)
     setTestState((s) => ({
       ...s,
-      [camera.id]: result.success ? { status: 'passed' } : { status: 'failed', error: result.error ?? undefined }
+      [camera.id]: {
+        status: result.success ? 'passed' : 'failed',
+        error: result.error ?? undefined,
+        ffmpegCommand: result.ffmpegCommand
+      }
     }))
   }
 
@@ -116,6 +120,15 @@ export function DiagnosticsPanel({ cameras, cameraDisplayNames, stations, onTest
   return (
     <div className="space-y-5">
       <p className="text-sm text-slate-400">{T.intro}</p>
+
+      <div className="flex items-center gap-6 flex-wrap text-xs">
+        <span className="text-slate-500">
+          {T.previewBackendLabel} <span className="text-slate-300 font-medium">{T.previewBackendValue}</span>
+        </span>
+        <span className="text-slate-500">
+          {T.recordingBackendLabel} <span className="text-slate-300 font-medium">{T.recordingBackendValue}</span>
+        </span>
+      </div>
 
       <div className="flex items-center gap-3 flex-wrap">
         <AnimatedButton size="sm" onClick={refresh} disabled={loading}>
@@ -187,6 +200,11 @@ export function DiagnosticsPanel({ cameras, cameraDisplayNames, stations, onTest
                   </p>
                   {test.status === 'passed' && <p className="text-xs text-ok-500 mt-0.5">{T.testPassed}</p>}
                   {test.status === 'failed' && <p className="text-xs text-rec-500 mt-0.5">{T.testFailed(test.error ?? '')}</p>}
+                  {test.ffmpegCommand && (
+                    <p className="text-[11px] text-slate-600 font-mono mt-1 break-all">
+                      {T.generatedFfmpegCommand}: {test.ffmpegCommand}
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <AnimatedButton size="sm" onClick={() => onTestCamera(camera)}>
@@ -250,6 +268,8 @@ function buildDiagnosticsText(
   lines.push(`Generated: ${now}`)
   lines.push(`App version: ${snapshot.appVersion}`)
   lines.push(`ffmpeg path: ${snapshot.ffmpegPath}`)
+  lines.push(`${T.previewBackendLabel} ${T.previewBackendValue}`)
+  lines.push(`${T.recordingBackendLabel} ${T.recordingBackendValue}`)
   lines.push('')
 
   lines.push('=== Cameras detected by Chromium (navigator.mediaDevices) ===')
@@ -293,6 +313,7 @@ function buildDiagnosticsText(
     lines.push(`  Internal Unique ID: ${camera.id}`)
     lines.push(`  Assigned Station: ${owner ? owner.name : '(unassigned)'}`)
     lines.push(`  Recording Test: ${test ? test.status + (test.error ? ` - ${test.error}` : '') : 'not run'}`)
+    if (test?.ffmpegCommand) lines.push(`  Generated FFmpeg Command: ${test.ffmpegCommand}`)
     lines.push('--------------------------')
   })
   lines.push('')

@@ -363,4 +363,5 @@ export interface DiagnosticsSnapshot {
 export interface DiagnosticsTestResult {
   success: boolean
   error: string | null
+  ffmpegCommand: string
 }

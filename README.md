@@ -85,6 +85,23 @@ a real live-preview test and a real short test recording per camera, and an **Ex
 button that writes a `diagnostics.txt` with all of the above plus recent app logs, for
 troubleshooting on-site without a debugger attached.
 
+The live **preview** (Settings/Device Pairing "Test Camera", and the Dashboard station feed) still
+goes through Chromium's `getUserMedia`, not ffmpeg - Chromium and ffmpeg are two separate device
+namespaces with no shared id, so the preview has to correlate a station's ffmpeg device path to a
+Chromium `deviceId` by matching device labels. Two things had to be true for that correlation to
+work at all, and both were silently broken: Chromium redacts every device's label until the current
+window has completed one actually-granted `getUserMedia()` call (an Electron
+`setPermissionRequestHandler` alone does not unlock this - `setPermissionCheckHandler` is also
+required, and even then the first call in a fresh window still needs a one-time unconstrained
+priming call before labels appear), and once labels ARE visible, Chromium appends a
+`" (vendorId:productId)"` suffix to a camera's label whenever more than one device shares a name -
+so a strict equality check against ffmpeg's plain friendly name never matched anything. With zero
+label matches, every "Test Camera" click silently fell back to an unconstrained `getUserMedia`
+request, which opens whatever Chromium considers the default device - the same physical camera -
+regardless of which one was actually requested. Recording was never affected by any of this: it
+opens a camera by ffmpeg's own unique DirectShow device path directly and has no dependency on
+Chromium's device list.
+
 ## Device Pairing
 
 Open the **Device Pairing** tab to identify physical scanners individually and assign each one to

@@ -154,7 +154,7 @@ class RecordingEngine extends EventEmitter {
     cameraDeviceId: string,
     micName: string | null,
     durationSeconds = 2
-  ): Promise<{ success: boolean; error: string | null }> {
+  ): Promise<{ success: boolean; error: string | null; ffmpegCommand: string }> {
     const ffmpegPath = resolveFfmpegPath()
     const tempPath = path.join(os.tmpdir(), `packing-recorder-diagnostic-${Date.now()}-${Math.random().toString(36).slice(2)}.mp4`)
     const deviceSpec = micName ? `video=${cameraDeviceId}:audio=${micName}` : `video=${cameraDeviceId}`
@@ -164,10 +164,14 @@ class RecordingEngine extends EventEmitter {
       'warning',
       '-f',
       'dshow',
-      '-video_size',
-      '640x480',
-      '-framerate',
-      '15',
+      // Deliberately no -video_size/-framerate here: forcing a specific mode
+      // (640x480@15 was tried first) fails outright on hardware that doesn't
+      // offer that exact combination - confirmed by reproducing the same
+      // "Could not find video device" / I/O error against real hardware,
+      // then getting a clean recording once the resolution/framerate
+      // constraints were dropped and DirectShow was left to pick the
+      // device's own default mode. A diagnostic test only needs to prove the
+      // device opens and produces frames, not any particular mode.
       '-rtbufsize',
       '128M',
       '-i',
@@ -185,6 +189,7 @@ class RecordingEngine extends EventEmitter {
       tempPath
     ]
 
+    const ffmpegCommand = `${ffmpegPath} ${args.join(' ')}`
     logger.info('Diagnostic test recording starting', { cameraDeviceId, args: args.join(' ') })
 
     return new Promise((resolve) => {
@@ -195,7 +200,7 @@ class RecordingEngine extends EventEmitter {
       })
       child.on('error', (err) => {
         logger.error('Diagnostic test recording failed to start', { cameraDeviceId, error: err.message })
-        resolve({ success: false, error: err.message })
+        resolve({ success: false, error: err.message, ffmpegCommand })
       })
       child.on('close', (code) => {
         let success = false
@@ -211,11 +216,11 @@ class RecordingEngine extends EventEmitter {
         }
         if (success) {
           logger.info('Diagnostic test recording succeeded', { cameraDeviceId })
-          resolve({ success: true, error: null })
+          resolve({ success: true, error: null, ffmpegCommand })
         } else {
           const message = summarizeFfmpegError(stderrTail)
           logger.warn('Diagnostic test recording failed', { cameraDeviceId, code, error: message })
-          resolve({ success: false, error: message })
+          resolve({ success: false, error: message, ffmpegCommand })
         }
       })
     })

@@ -10,6 +10,19 @@ export function createMainWindow(): BrowserWindow {
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
     callback(permission === 'media')
   })
+  // setPermissionRequestHandler alone only lets a getUserMedia() call
+  // succeed - it does NOT make Chromium treat the origin as having a
+  // standing grant. Without this separate check handler, every
+  // navigator.mediaDevices.enumerateDevices() call keeps returning
+  // permission-redacted entries (blank label, blank/unstable deviceId) even
+  // after a successful getUserMedia() call, because Chromium's device-label
+  // exposure is gated on this handler, not on request history. That silently
+  // broke duplicate-camera disambiguation in useCameraPreview: with every
+  // device unlabeled, its name-based device matching always found zero
+  // matches and fell back to an unconstrained `getUserMedia({video: true})`,
+  // which opens whatever Chromium considers the default device - the same
+  // one - no matter which camera was actually requested.
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => permission === 'media')
 
   const win = new BrowserWindow({
     width: 1600,
