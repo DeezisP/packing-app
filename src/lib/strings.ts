@@ -212,15 +212,6 @@ export const strings = {
     scannerAssignmentBody: (n: number): string =>
       `จับคู่สแกนเนอร์กับสถานีได้จากแท็บ "จับคู่อุปกรณ์" ซึ่งจะระบุสแกนเนอร์ USB แต่ละตัวโดยอัตโนมัติ (ผ่าน Windows Raw Input) และให้เลือกกำหนดได้ผ่านเมนู รวมถึงปุ่มระบุสแกนเนอร์สำหรับกรณีที่มีสแกนเนอร์รุ่นเดียวกันหลายตัว เมื่อจับคู่แล้ว การสแกนจากสแกนเนอร์นั้นจะส่งไปยังสถานีที่กำหนดโดยอัตโนมัติ สถานีที่ไม่มีสแกนเนอร์จับคู่จะยังใช้ตัวเลือกสถานีที่ใช้งานอยู่บนแดชบอร์ดได้ (คลิกที่การ์ด หรือกด 1-${n})`,
 
-    sectionCameraDiagnostics: 'การวินิจฉัยกล้อง',
-    cameraDiagnosticsBody:
-      'รายการกล้องทั้งหมดที่ตรวจพบ พร้อมรหัสเฉพาะที่ระบบใช้แยกแยะกล้องรุ่นเดียวกันหลายตัวภายใน - ใช้หน้านี้เพื่อยืนยันว่ากล้องแต่ละตัวถูกตรวจพบแยกจากกันจริง',
-    cameraUniqueId: 'รหัสเฉพาะ',
-    cameraUsedBy: (station: string, resolution: string, fps: number): string =>
-      `ใช้งานโดย ${station} · ${resolution} @ ${fps}fps`,
-    cameraNotAssignedToStation: 'ยังไม่ได้กำหนดให้สถานีใด',
-    noCamerasDetectedDiagnostics: 'ยังไม่พบกล้องที่เชื่อมต่อ',
-
     folderDoesNotExistTitle: 'ยังไม่มีโฟลเดอร์นี้',
     folderDoesNotExistBody: (path: string): string => `${path} ยังไม่มีอยู่ ต้องการสร้างหรือไม่?`,
     createIt: 'ใช่ สร้างโฟลเดอร์นี้'
@@ -247,5 +238,35 @@ export const strings = {
     sectionCameras: 'กล้อง',
     testCamera: 'ทดสอบกล้อง',
     noCamerasDetected: 'ไม่พบกล้อง'
+  },
+
+  diagnostics: {
+    sectionTitle: 'การวินิจฉัย',
+    intro:
+      'เปรียบเทียบผลการตรวจจับกล้องจาก Chromium, FFmpeg และ Windows แยกกัน เพื่อยืนยันว่ากล้องรุ่นเดียวกันหลายตัวถูกแยกออกจากกันอย่างถูกต้องในทุกขั้นตอน ตั้งแต่ตรวจจับอุปกรณ์ไปจนถึงบันทึกวิดีโอ',
+    refresh: 'รีเฟรช',
+    refreshing: 'กำลังตรวจสอบ...',
+    detectedByChromium: (n: number): string => `ตรวจพบโดย Chromium (${n})`,
+    detectedByFfmpeg: (n: number): string => `ตรวจพบโดย FFmpeg / DirectShow (${n})`,
+    detectedByWindows: (n: number): string => `ตรวจพบโดย Windows (${n})`,
+    unlabeledDevice: '(ยังไม่ได้รับอนุญาตให้เข้าถึงกล้อง)',
+    stationAssignments: 'รหัสเฉพาะภายในและการกำหนดให้สถานี',
+    internalId: 'รหัสเฉพาะภายใน',
+    ffmpegDeviceId: 'รหัสอุปกรณ์ FFmpeg',
+    windowsInstanceId: 'รหัสอุปกรณ์ Windows',
+    windowsStatus: 'สถานะ',
+    noneDetected: 'ยังไม่พบอุปกรณ์',
+    cameraAssignedTo: (station: string): string => `กำหนดให้ ${station}`,
+    cameraUnassigned: 'ยังไม่ได้กำหนดให้สถานีใด',
+    recordingTest: 'ทดสอบการบันทึก',
+    testing: 'กำลังทดสอบ...',
+    testPassed: 'ทดสอบผ่าน - บันทึกได้สำเร็จ',
+    testFailed: (err: string): string => `ทดสอบไม่ผ่าน - ${err}`,
+    exportButton: 'ส่งออกไฟล์วินิจฉัย',
+    exporting: 'กำลังส่งออก...',
+    exportedTo: (path: string): string => `บันทึกไฟล์วินิจฉัยแล้วที่ ${path}`,
+    exportCancelled: 'ยกเลิกการส่งออก',
+    showRaw: 'แสดงผลลัพธ์ดิบจาก FFmpeg',
+    hideRaw: 'ซ่อนผลลัพธ์ดิบจาก FFmpeg'
   }
 }

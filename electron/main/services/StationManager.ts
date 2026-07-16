@@ -391,7 +391,7 @@ class StationManager extends EventEmitter {
         dbId,
         videoPath: result.videoPath
       })
-      logger.info('Recording started', { stationId, barcode, camera: cameraDisplayName })
+      logger.info('Recording started', { stationId, barcode, camera: cameraDisplayName, cameraId: camera.id })
     } catch (err) {
       overlayService.stop(stationId)
       const message = (err as Error).message

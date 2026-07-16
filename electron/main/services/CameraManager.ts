@@ -13,6 +13,7 @@ const POLL_INTERVAL_MS = 5000
 class CameraManager extends EventEmitter {
   private lastVideoDevices: CameraDevice[] = []
   private lastAudioDevices: string[] = []
+  private lastRawOutput = ''
   private pollTimer: NodeJS.Timeout | null = null
 
   private runDshowListing(): Promise<{ video: CameraDevice[]; audio: string[] }> {
@@ -25,9 +26,11 @@ class CameraManager extends EventEmitter {
       })
       child.on('error', (err) => {
         logger.error('Failed to spawn ffmpeg for device listing', { error: err.message })
+        this.lastRawOutput = ''
         resolve({ video: [], audio: [] })
       })
       child.on('close', () => {
+        this.lastRawOutput = stderr
         resolve(parseDshowOutput(stderr))
       })
       // ffmpeg with -list_devices exits on its own almost immediately; guard
@@ -38,14 +41,24 @@ class CameraManager extends EventEmitter {
     })
   }
 
+  /** Raw ffmpeg dshow stderr from the most recent listing - surfaced on the
+   *  Diagnostics page so a mismatch between what ffmpeg actually printed and
+   *  what got parsed out of it is visible without reading log files. */
+  getLastRawOutput(): string {
+    return this.lastRawOutput
+  }
+
   async listVideoDevices(): Promise<CameraDevice[]> {
-    const { video } = await this.runDshowListing()
+    const { video, audio } = await this.runDshowListing()
     this.lastVideoDevices = video
+    this.lastAudioDevices = audio
+    logEnumeration(video, audio)
     return video
   }
 
   async listAudioDevices(): Promise<string[]> {
-    const { audio } = await this.runDshowListing()
+    const { video, audio } = await this.runDshowListing()
+    this.lastVideoDevices = video
     this.lastAudioDevices = audio
     return audio
   }
@@ -61,10 +74,7 @@ class CameraManager extends EventEmitter {
     this.lastAudioDevices = result.audio
 
     if (changed) {
-      logger.info('Camera/microphone device list changed', {
-        video: result.video.map((d) => d.name),
-        audio: result.audio
-      })
+      logEnumeration(result.video, result.audio)
       this.emit('changed', result)
     }
     return result
@@ -102,6 +112,27 @@ class CameraManager extends EventEmitter {
   }
 }
 
+/** Parses ffmpeg's `-f dshow -list_devices true` stderr output.
+ *
+ *  ROOT CAUSE (see root-cause report): this function used to require a
+ *  section-header line ("DirectShow video devices" / "DirectShow audio
+ *  devices") to know whether a subsequent `"Name"` line was a camera or a
+ *  microphone. ffmpeg 5.x/6.x (including the ffmpeg-static 6.1.1 build this
+ *  app ships) no longer prints those headers at all - every device line is
+ *  self-tagged inline instead, e.g. `"EMEET SmartCam S600" (video)`. With no
+ *  header ever appearing, `section` stayed `null` forever and EVERY device -
+ *  not just the second identical camera - was silently dropped, regardless
+ *  of how many physical cameras Windows reported. Verified by running the
+ *  actual bundled ffmpeg.exe against two physical EMEET SmartCam S600
+ *  webcams: raw stderr correctly lists both with distinct "Alternative name"
+ *  DirectShow paths, but the old parser produced an empty array from that
+ *  exact output.
+ *
+ *  Fixed by reading the type from each device line's own inline tag first,
+ *  which is what every currently-shipping ffmpeg build prints. The
+ *  header-line tracking is kept as a fallback for older ffmpeg builds that
+ *  predate the inline tag and never had one, so both output generations
+ *  parse correctly instead of special-casing one exact version. */
 function parseDshowOutput(stderr: string): { video: CameraDevice[]; audio: string[] } {
   const lines = stderr.split(/\r?\n/)
   const video: CameraDevice[] = []
@@ -110,6 +141,8 @@ function parseDshowOutput(stderr: string): { video: CameraDevice[]; audio: strin
   let videoIndex = 0
 
   for (const line of lines) {
+    // Older ffmpeg builds (pre-5.x) group devices under these headers with
+    // no per-line type tag - kept as the fallback path, see doc comment above.
     if (line.includes('DirectShow video devices')) {
       section = 'video'
       continue
@@ -136,18 +169,46 @@ function parseDshowOutput(stderr: string): { video: CameraDevice[]; audio: strin
     const match = line.match(/"([^"]+)"/)
     if (!match) continue
 
-    if (section === 'video') {
+    // Current ffmpeg builds tag every device line inline - this is the
+    // primary signal. Only fall back to the header-tracked `section` when a
+    // line has no inline tag, for a build old enough to lack one entirely.
+    const inlineType = line.includes('(video)') ? 'video' : line.includes('(audio)') ? 'audio' : null
+    const type = inlineType ?? section
+
+    if (type === 'video') {
+      section = 'video'
       // `id` defaults to the friendly name and is overwritten by the
       // "Alternative name" line immediately below (handled above) when
       // ffmpeg's driver reports one - a driver that doesn't keeps working
       // exactly as before, just without duplicate-name disambiguation.
       video.push({ id: match[1], name: match[1], index: videoIndex++, connected: true })
-    } else if (section === 'audio') {
+    } else if (type === 'audio') {
+      section = 'audio'
       audio.push(match[1])
     }
   }
 
   return { video, audio }
+}
+
+/** Logs the exact per-device breakdown requested for camera-pipeline
+ *  diagnostics: friendly name, the unique id ffmpeg is actually told to
+ *  open, and enumeration index, for every currently-detected camera. Called
+ *  on every UI-triggered listing and whenever the polled list changes (not
+ *  on every unchanged 5s poll, to avoid flooding the log file). */
+function logEnumeration(video: CameraDevice[], audio: string[]): void {
+  const lines = ['Enumerating Cameras...']
+  if (video.length === 0) {
+    lines.push('  (no DirectShow video capture devices reported by ffmpeg)')
+  }
+  video.forEach((cam, i) => {
+    lines.push(`Camera ${i + 1}`)
+    lines.push(`  Friendly Name: ${cam.name}`)
+    lines.push(`  Device ID (ffmpeg dshow "Alternative name"): ${cam.id}`)
+    lines.push(`  Enumeration Index: ${cam.index}`)
+    lines.push('--------------------------')
+  })
+  logger.info(lines.join('\n'), { videoCount: video.length, audioCount: audio.length })
 }
 
 export const cameraManager = new CameraManager()

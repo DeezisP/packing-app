@@ -317,3 +317,50 @@ export interface UpdateState {
   progressPercent: number | null
   error: string | null
 }
+
+/** Windows' own PnP device record for a camera (from `Get-PnpDevice -Class
+ *  Camera`) - the same source Device Manager reads from. Independent of
+ *  ffmpeg entirely; used on the Diagnostics page to cross-check that ffmpeg
+ *  and Windows agree on how many physical cameras are present. */
+export interface WindowsCameraInfo {
+  friendlyName: string
+  instanceId: string
+  status: string
+}
+
+/** How a station's configured camera currently resolves, for the
+ *  Diagnostics page's "current assignment" table - mirrors
+ *  CameraManager.resolveStationCamera but pre-resolved for display. */
+export interface DiagnosticsStationAssignment {
+  stationId: string
+  stationName: string
+  cameraId: string | null
+  cameraName: string | null
+  resolvedCameraId: string | null
+  connected: boolean
+}
+
+/** Everything the main process knows about camera detection, gathered in one
+ *  call for Settings -> Diagnostics. The renderer adds its own
+ *  navigator.mediaDevices (Chromium) list on top before rendering/exporting,
+ *  since only the renderer can see that. */
+export interface DiagnosticsSnapshot {
+  ffmpeg: {
+    /** Raw stderr from the most recent `ffmpeg -list_devices` run, exactly
+     *  as ffmpeg printed it - lets a mismatch between what ffmpeg reported
+     *  and what got parsed out of it be seen directly. */
+    raw: string
+    video: CameraDevice[]
+    audio: string[]
+  }
+  windows: WindowsCameraInfo[]
+  stations: DiagnosticsStationAssignment[]
+  recentLogs: LogEntry[]
+  appVersion: string
+  ffmpegPath: string
+}
+
+export interface DiagnosticsTestResult {
+  success: boolean
+  error: string | null
+}

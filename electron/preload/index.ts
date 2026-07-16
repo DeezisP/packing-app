@@ -12,7 +12,9 @@ import type {
   SystemStatusInfo,
   LogEntry,
   SaveLocationStatus,
-  UpdateState
+  UpdateState,
+  DiagnosticsSnapshot,
+  DiagnosticsTestResult
 } from '@shared/types'
 
 const api = {
@@ -77,6 +79,12 @@ const api = {
       }
     }
   },
+  diagnostics: {
+    get: (): Promise<DiagnosticsSnapshot> => ipcRenderer.invoke(IPC.diagnosticsGet),
+    testRecording: (cameraId: string, micName: string | null): Promise<DiagnosticsTestResult> =>
+      ipcRenderer.invoke(IPC.diagnosticsTestRecording, cameraId, micName),
+    export: (text: string): Promise<string | null> => ipcRenderer.invoke(IPC.diagnosticsExport, text)
+  },
   scanners: {
     list: (): Promise<ScannerDevice[]> => ipcRenderer.invoke(IPC.scannersList),
     onListChanged: (cb: (devices: ScannerDevice[]) => void) => {
@@ -105,6 +113,8 @@ const api = {
   system: {
     getStatus: (): Promise<SystemStatusInfo> => ipcRenderer.invoke(IPC.systemGetStatus),
     getLogs: (limit: number): Promise<LogEntry[]> => ipcRenderer.invoke(IPC.systemGetLogs, limit),
+    log: (level: LogEntry['level'], message: string, meta?: Record<string, unknown>): Promise<void> =>
+      ipcRenderer.invoke(IPC.systemLogFromRenderer, level, message, meta),
     onLogEntry: (cb: (entry: LogEntry) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, entry: LogEntry): void => cb(entry)
       ipcRenderer.on(IPC.systemOnLogEntry, listener)

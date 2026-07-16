@@ -8,6 +8,7 @@ import { AnimatedButton } from '../components/common/AnimatedButton'
 import { AnimatedDialog } from '../components/common/AnimatedDialog'
 import { Toggle } from '../components/common/Toggle'
 import { TestCameraModal } from '../components/pairing/TestCameraModal'
+import { DiagnosticsPanel } from '../components/settings/DiagnosticsPanel'
 import { useUpdateState } from '../hooks/useUpdateState'
 import { useCameraDevices } from '../hooks/useCameraDevices'
 import { formatBytes } from '../lib/format'
@@ -309,40 +310,13 @@ export function SettingsPage({ config, onConfigChanged }: Props): JSX.Element {
         </div>
       </Section>
 
-      <Section title={T.sectionCameraDiagnostics}>
-        <p className="text-sm text-slate-400 mb-4">{T.cameraDiagnosticsBody}</p>
-        <div className="space-y-3">
-          {cameras.length === 0 && (
-            <p className="text-sm text-slate-600 text-center py-6">{T.noCamerasDetectedDiagnostics}</p>
-          )}
-          {cameras.map((camera) => {
-            const owner = draft.stations.find((s) => s.cameraId === camera.id || (!s.cameraId && s.cameraName === camera.name))
-            return (
-              <div
-                key={camera.id}
-                className="flex items-center justify-between gap-4 border border-white/10 rounded-lg px-4 py-3 bg-surface-850/30 flex-wrap"
-              >
-                <div className="min-w-0">
-                  <p className="text-sm font-semibold text-slate-100">{cameraDisplayNames.get(camera.id) ?? camera.name}</p>
-                  <p className="text-xs text-slate-500 font-mono mt-0.5 break-all">
-                    {T.cameraUniqueId}: {camera.id}
-                  </p>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    {owner
-                      ? T.cameraUsedBy(owner.name, owner.resolutionPreset, owner.fps)
-                      : T.cameraNotAssignedToStation}
-                  </p>
-                </div>
-                <div className="flex items-center gap-3 shrink-0">
-                  <span className="text-ok-500 text-sm">{strings.common.connected}</span>
-                  <AnimatedButton size="sm" onClick={() => setTestCamera(camera)}>
-                    {strings.devicePairing.testCamera}
-                  </AnimatedButton>
-                </div>
-              </div>
-            )
-          })}
-        </div>
+      <Section title={strings.diagnostics.sectionTitle}>
+        <DiagnosticsPanel
+          cameras={cameras}
+          cameraDisplayNames={cameraDisplayNames}
+          stations={draft.stations}
+          onTestCamera={setTestCamera}
+        />
       </Section>
 
       <Section title={T.sectionOverlay}>

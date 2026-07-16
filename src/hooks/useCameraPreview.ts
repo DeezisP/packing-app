@@ -49,6 +49,14 @@ export function useCameraPreview(
         const matches = devices.filter((d) => d.kind === 'videoinput' && d.label === target!.name)
         const match = matches[occurrence] ?? matches[0]
 
+        window.electronAPI.system.log('info', 'Preview stage: attaching camera', {
+          cameraId: target!.id,
+          cameraName: target!.name,
+          occurrence,
+          chromiumDeviceId: match?.deviceId ?? null,
+          chromiumMatchCount: matches.length
+        })
+
         stream = await navigator.mediaDevices.getUserMedia({
           video: match ? { deviceId: { exact: match.deviceId } } : true
         })
@@ -62,7 +70,13 @@ export function useCameraPreview(
         }
         setError(null)
       } catch (err) {
-        if (!cancelled) setError((err as Error).message)
+        const message = (err as Error).message
+        window.electronAPI.system.log('warn', 'Preview stage: attach failed', {
+          cameraId: target!.id,
+          cameraName: target!.name,
+          error: message
+        })
+        if (!cancelled) setError(message)
       }
     }
 

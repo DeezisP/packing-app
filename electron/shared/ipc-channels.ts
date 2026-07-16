@@ -25,6 +25,11 @@ export const IPC = {
   camerasList: 'cameras:list',
   cameraOnListChanged: 'cameras:onListChanged',
 
+  // Diagnostics
+  diagnosticsGet: 'diagnostics:get',
+  diagnosticsTestRecording: 'diagnostics:testRecording',
+  diagnosticsExport: 'diagnostics:export',
+
   // Scanners / device pairing
   scannersList: 'scanners:list',
   scannersOnListChanged: 'scanners:onListChanged',
@@ -41,6 +46,7 @@ export const IPC = {
   systemGetStatus: 'system:getStatus',
   systemGetLogs: 'system:getLogs',
   systemOnLogEntry: 'system:onLogEntry',
+  systemLogFromRenderer: 'system:logFromRenderer',
 
   // Updates (electron-updater / GitHub Releases)
   updateCheck: 'update:check',

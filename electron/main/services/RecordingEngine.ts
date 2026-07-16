@@ -1,5 +1,6 @@
 import { spawn, ChildProcessWithoutNullStreams } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import { resolveFfmpegPath } from './FfmpegLocator'
@@ -138,6 +139,86 @@ class RecordingEngine extends EventEmitter {
       record.process.kill('SIGKILL')
     }
     this.active.clear()
+  }
+
+  /** Diagnostics-only: opens one specific camera by its unique device id and
+   *  records a few real seconds to a throwaway temp file, proving ffmpeg can
+   *  actually acquire that exact physical device (not just that it appears
+   *  in a device list) without conflicting with any other camera. Entirely
+   *  isolated from `active`/`start`/`stop` - it never touches the station
+   *  recording workflow, so two of these (or one of these plus a real
+   *  station recording) can safely run concurrently against two different
+   *  device ids at once, which is exactly what needs verifying for two
+   *  identical webcams. */
+  async testRecording(
+    cameraDeviceId: string,
+    micName: string | null,
+    durationSeconds = 2
+  ): Promise<{ success: boolean; error: string | null }> {
+    const ffmpegPath = resolveFfmpegPath()
+    const tempPath = path.join(os.tmpdir(), `packing-recorder-diagnostic-${Date.now()}-${Math.random().toString(36).slice(2)}.mp4`)
+    const deviceSpec = micName ? `video=${cameraDeviceId}:audio=${micName}` : `video=${cameraDeviceId}`
+    const args = [
+      '-hide_banner',
+      '-loglevel',
+      'warning',
+      '-f',
+      'dshow',
+      '-video_size',
+      '640x480',
+      '-framerate',
+      '15',
+      '-rtbufsize',
+      '128M',
+      '-i',
+      deviceSpec,
+      '-t',
+      String(durationSeconds),
+      '-c:v',
+      'libx264',
+      '-preset',
+      'ultrafast',
+      '-pix_fmt',
+      'yuv420p',
+      '-an',
+      '-y',
+      tempPath
+    ]
+
+    logger.info('Diagnostic test recording starting', { cameraDeviceId, args: args.join(' ') })
+
+    return new Promise((resolve) => {
+      let stderrTail = ''
+      const child = spawn(ffmpegPath, args)
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderrTail = (stderrTail + chunk.toString()).slice(-4000)
+      })
+      child.on('error', (err) => {
+        logger.error('Diagnostic test recording failed to start', { cameraDeviceId, error: err.message })
+        resolve({ success: false, error: err.message })
+      })
+      child.on('close', (code) => {
+        let success = false
+        try {
+          success = code === 0 && fs.existsSync(tempPath) && fs.statSync(tempPath).size > 0
+        } catch {
+          success = false
+        }
+        try {
+          if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath)
+        } catch {
+          // best-effort cleanup of a throwaway diagnostic file
+        }
+        if (success) {
+          logger.info('Diagnostic test recording succeeded', { cameraDeviceId })
+          resolve({ success: true, error: null })
+        } else {
+          const message = summarizeFfmpegError(stderrTail)
+          logger.warn('Diagnostic test recording failed', { cameraDeviceId, code, error: message })
+          resolve({ success: false, error: message })
+        }
+      })
+    })
   }
 
   async generateThumbnail(videoPath: string): Promise<string | null> {

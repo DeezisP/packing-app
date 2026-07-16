@@ -16,10 +16,18 @@ export function useCameraDevices(): { cameras: CameraDevice[]; mics: string[] } 
       if (cancelled) return
       setCameras(video)
       setMics(audio)
+      window.electronAPI.system.log('info', 'UI stage: camera list received', {
+        cameras: video.map((c) => ({ id: c.id, name: c.name })),
+        mics: audio
+      })
     })
     const off = window.electronAPI.cameras.onListChanged(({ video, audio }) => {
       setCameras(video)
       setMics(audio)
+      window.electronAPI.system.log('info', 'UI stage: camera list changed', {
+        cameras: video.map((c) => ({ id: c.id, name: c.name })),
+        mics: audio
+      })
     })
     return () => {
       cancelled = true

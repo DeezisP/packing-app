@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, dialog, shell } from 'electron'
+import { app, ipcMain, BrowserWindow, dialog, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { IPC } from '@shared/ipc-channels'
@@ -8,12 +8,15 @@ import { cameraManager } from '../services/CameraManager'
 import { scannerManager } from '../services/ScannerManager'
 import { rawInputService } from '../services/RawInputService'
 import { stationManager } from '../services/StationManager'
+import { recordingEngine } from '../services/RecordingEngine'
 import { updateService } from '../services/UpdateService'
 import { logger } from '../services/Logger'
 import { getDiskUsage } from '../services/DiskMonitor'
 import { validateSaveLocation, createSaveLocationFolder } from '../services/SaveLocationValidator'
 import { defaultPaths, resolveSaveLocation } from '../services/PathService'
-import type { AppConfig, SearchFilters } from '@shared/types'
+import { resolveFfmpegPath } from '../services/FfmpegLocator'
+import { listWindowsCameras } from '../services/WindowsDeviceService'
+import type { AppConfig, SearchFilters, DiagnosticsStationAssignment, LogEntry } from '@shared/types'
 
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -75,6 +78,50 @@ export function registerIpcHandlers(): void {
     return { video, audio }
   })
 
+  // Gathers every independent camera-detection source (ffmpeg/DirectShow,
+  // Windows PnP) plus current station assignments and recent logs in one
+  // call, for Settings -> Diagnostics. Chromium's own device list can only
+  // be read by the renderer (navigator.mediaDevices), so it's merged in
+  // there rather than here.
+  ipcMain.handle(IPC.diagnosticsGet, async () => {
+    const [video, audio] = await Promise.all([cameraManager.listVideoDevices(), cameraManager.listAudioDevices()])
+    const windows = await listWindowsCameras()
+    const stations: DiagnosticsStationAssignment[] = configManager.get().stations.map((station) => {
+      const resolved = cameraManager.resolveStationCamera(station)
+      return {
+        stationId: station.id,
+        stationName: station.name,
+        cameraId: station.cameraId,
+        cameraName: station.cameraName,
+        resolvedCameraId: resolved?.id ?? null,
+        connected: Boolean(resolved)
+      }
+    })
+    return {
+      ffmpeg: { raw: cameraManager.getLastRawOutput(), video, audio },
+      windows,
+      stations,
+      recentLogs: logger.getRecentEntries(300),
+      appVersion: app.getVersion(),
+      ffmpegPath: resolveFfmpegPath()
+    }
+  })
+
+  ipcMain.handle(IPC.diagnosticsTestRecording, (_e, cameraId: string, micName: string | null) =>
+    recordingEngine.testRecording(cameraId, micName)
+  )
+
+  ipcMain.handle(IPC.diagnosticsExport, async (_e, text: string) => {
+    const result = await dialog.showSaveDialog({
+      defaultPath: 'diagnostics.txt',
+      filters: [{ name: 'Text', extensions: ['txt'] }]
+    })
+    if (result.canceled || !result.filePath) return null
+    fs.writeFileSync(result.filePath, text, 'utf-8')
+    logger.info('Diagnostics exported', { path: result.filePath })
+    return result.filePath
+  })
+
   ipcMain.handle(IPC.scannersList, () => scannerManager.listScanners())
 
   ipcMain.handle(IPC.recordingsSearch, (_e, filters: SearchFilters) => database.search(filters))
@@ -107,6 +154,17 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC.systemGetLogs, (_e, limit: number) => logger.getRecentEntries(limit ?? 200))
+
+  // Lets the renderer write into the same app.log the main process uses, so
+  // UI/preview-stage events (a preview attach attempt, a picker interaction)
+  // show up interleaved with enumeration/recording events instead of being
+  // invisible to log-based diagnostics.
+  ipcMain.handle(
+    IPC.systemLogFromRenderer,
+    (_e, level: LogEntry['level'], message: string, meta?: Record<string, unknown>) => {
+      logger[level](`[renderer] ${message}`, meta)
+    }
+  )
 
   ipcMain.handle(IPC.updateCheck, () => updateService.check())
   ipcMain.handle(IPC.updateDownload, () => updateService.download())

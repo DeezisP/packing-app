@@ -68,9 +68,22 @@ DirectShow device path instead of that name. Every camera picker (Settings, Devi
 Dashboard preview) shows duplicates suffixed for clarity - "EMEET SmartCam S600 (1)",
 "EMEET SmartCam S600 (2)" - and internally matches, previews, pairs, and **records** each one by
 its unique device path, never by the shared name, so two identical cameras can be assigned to two
-different stations and record simultaneously without conflict. Settings → **Camera Diagnostics**
-lists every detected camera's unique id and which station (if any) it's assigned to, for
-troubleshooting.
+different stations and record simultaneously without conflict.
+
+Camera enumeration works by asking ffmpeg to list DirectShow devices and parsing its text output -
+that parser reads the type (camera vs. microphone) of each line from ffmpeg's own inline
+`(video)`/`(audio)` tag, falling back to older ffmpeg's section-header format for a build that
+predates the inline tag. (An earlier version of this parser only understood the header format;
+current ffmpeg builds don't print one, which silently dropped every camera - not just duplicates -
+until it was fixed.)
+
+Settings → **Diagnostics** cross-references three independent detection sources side by side -
+Chromium's own `navigator.mediaDevices`, ffmpeg/DirectShow, and Windows' PnP device database
+(`Get-PnpDevice`) - so a mismatch between what's actually connected and what any one layer reports
+is visible directly. It also lists every detected camera's unique id and station assignment, offers
+a real live-preview test and a real short test recording per camera, and an **Export Diagnostics**
+button that writes a `diagnostics.txt` with all of the above plus recent app logs, for
+troubleshooting on-site without a debugger attached.
 
 ## Device Pairing
 
