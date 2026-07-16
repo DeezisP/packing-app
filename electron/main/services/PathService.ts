@@ -46,9 +46,21 @@ export const defaultPaths = {
   // even a full reinstall to a different folder, since userData is a stable
   // per-user OS location electron manages independently of where the app
   // itself is installed.
-  configBackupFile: path.join(app.getPath('userData'), 'config.backup.json')
+  configBackupFile: path.join(app.getPath('userData'), 'config.backup.json'),
+  // Pure ephemeral cache (one continuously-overwritten JPEG per station while
+  // it's recording, see RecordingEngine's live-preview output branch) - OS
+  // temp, not appRoot, since it has no reason to be portable or survive a
+  // reinstall the way Videos/config/database do.
+  previewCacheDir: path.join(app.getPath('temp'), 'packing-recorder-preview')
 }
 
 export function resolveSaveLocation(saveLocation: string): string {
   return path.isAbsolute(saveLocation) ? saveLocation : path.join(appRoot, saveLocation)
+}
+
+/** Where the single continuously-refreshed live-preview frame for a station
+ *  lives while it's recording - see RecordingEngine.start()'s second ffmpeg
+ *  output branch, which is the only thing that ever writes here. */
+export function previewFramePath(stationId: string): string {
+  return path.join(defaultPaths.previewCacheDir, `${stationId}.jpg`)
 }

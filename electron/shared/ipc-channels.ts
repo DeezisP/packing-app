@@ -28,6 +28,7 @@ export const IPC = {
   cameraOnListChanged: 'cameras:onListChanged',
   camerasGetCapabilities: 'cameras:getCapabilities',
   camerasGetOwner: 'cameras:getOwner',
+  camerasGetPreviewFrameUrl: 'cameras:getPreviewFrameUrl',
   cameraReportPreviewOwnership: 'cameras:reportPreviewOwnership',
   cameraOnReleaseForRecording: 'cameras:onReleaseForRecording',
   cameraOnReacquireAfterRecording: 'cameras:onReacquireAfterRecording',

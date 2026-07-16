@@ -13,9 +13,10 @@ import { updateService } from '../services/UpdateService'
 import { logger } from '../services/Logger'
 import { getDiskUsage } from '../services/DiskMonitor'
 import { validateSaveLocation, createSaveLocationFolder } from '../services/SaveLocationValidator'
-import { defaultPaths, resolveSaveLocation } from '../services/PathService'
+import { defaultPaths, resolveSaveLocation, previewFramePath } from '../services/PathService'
 import { resolveFfmpegPath } from '../services/FfmpegLocator'
 import { listWindowsCameras } from '../services/WindowsDeviceService'
+import { toMediaUrl } from '../services/MediaProtocol'
 import type { AppConfig, SearchFilters, DiagnosticsStationAssignment, LogEntry } from '@shared/types'
 
 function broadcast(channel: string, payload: unknown): void {
@@ -83,6 +84,8 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.camerasGetCapabilities, (_e, cameraId: string) => cameraManager.getCapabilities(cameraId))
 
   ipcMain.handle(IPC.camerasGetOwner, (_e, cameraId: string) => cameraManager.getOwner(cameraId))
+
+  ipcMain.handle(IPC.camerasGetPreviewFrameUrl, (_e, stationId: string) => toMediaUrl(previewFramePath(stationId)))
 
   ipcMain.handle(IPC.cameraReportPreviewOwnership, (_e, cameraId: string, stationId: string, active: boolean) =>
     cameraManager.reportPreviewOwnership(cameraId, stationId, active)

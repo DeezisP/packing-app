@@ -147,11 +147,7 @@ export function SearchPage({ config }: Props): JSX.Element {
                   className="cv-row border-t border-white/5 hover:bg-white/[0.04] transition-colors duration-150"
                 >
                   <td className="px-4 py-2">
-                    {r.thumbnailUrl ? (
-                      <img src={r.thumbnailUrl} className="w-16 h-9 object-cover rounded-md" />
-                    ) : (
-                      <div className="w-16 h-9 bg-surface-800/60 rounded-md" />
-                    )}
+                    <Thumbnail url={r.thumbnailUrl} />
                   </td>
                   <td className="px-4 py-2 font-mono">{r.barcode}</td>
                   <td className="px-4 py-2 text-slate-400">{r.station}</td>
@@ -218,6 +214,22 @@ export function SearchPage({ config }: Props): JSX.Element {
       </AnimatePresence>
     </div>
   )
+}
+
+/** Falls back to the same gray placeholder used for "no thumbnail yet"
+ *  whenever the image actually fails to load - a stale/missing/corrupt
+ *  thumbnail.jpg (e.g. from a recording too short for the usual 1s-in seek to
+ *  land on a frame) previously rendered the browser's broken-image icon
+ *  instead. Resets if the url itself changes (e.g. after a search refresh
+ *  swaps in a different recording's now-freshly-generated thumbnail). */
+function Thumbnail({ url }: { url: string | null }): JSX.Element {
+  const [failed, setFailed] = useState(false)
+  useEffect(() => setFailed(false), [url])
+
+  if (!url || failed) {
+    return <div className="w-16 h-9 bg-surface-800/60 rounded-md" />
+  }
+  return <img src={url} onError={() => setFailed(true)} className="w-16 h-9 object-cover rounded-md" />
 }
 
 function StatusPill({ status }: { status: RecordingRecord['status'] }): JSX.Element {

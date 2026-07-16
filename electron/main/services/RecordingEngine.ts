@@ -5,6 +5,7 @@ import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import { resolveFfmpegPath } from './FfmpegLocator'
 import { logger } from './Logger'
+import { defaultPaths, previewFramePath } from './PathService'
 import { QUALITY_PRESETS, type StationConfig, type OverlayConfig } from '@shared/types'
 
 const SYSTEM_FONT_FILE = 'C:/Windows/Fonts/arial.ttf'
@@ -47,6 +48,14 @@ class RecordingEngine extends EventEmitter {
     fs.mkdirSync(outputDir, { recursive: true })
     const videoPath = path.join(outputDir, 'packing.mp4')
 
+    // A live-preview frame branch off the SAME capture session, not a second
+    // camera connection - see buildRecordArgs. This is what lets the
+    // dashboard keep showing a live (if downscaled/throttled) image during
+    // recording instead of freezing/hiding the preview, without ever opening
+    // the physical device twice.
+    fs.mkdirSync(defaultPaths.previewCacheDir, { recursive: true })
+    const previewPath = previewFramePath(station.id)
+
     const preset = QUALITY_PRESETS[station.qualityPreset]
     const ffmpegPath = resolveFfmpegPath()
     const args = buildRecordArgs({
@@ -57,6 +66,7 @@ class RecordingEngine extends EventEmitter {
       fps: station.fps,
       bitrateKbps: station.bitrateKbps,
       outputPath: videoPath,
+      previewFramePath: previewPath,
       overlay
     })
 
@@ -226,37 +236,50 @@ class RecordingEngine extends EventEmitter {
     })
   }
 
+  /** Extracts one frame at ~1s in as thumbnail.jpg. A recording shorter than
+   *  that (e.g. a barcode scanned and immediately scanned again to stop) has
+   *  no frame at 00:00:01, so that attempt produces nothing usable - falls
+   *  back to grabbing the very first frame instead, so a short recording
+   *  still gets a real thumbnail rather than a broken image in the History
+   *  page. Either attempt must produce a non-empty file to count as success -
+   *  a nonzero exit code alone isn't a reliable enough signal (seen in
+   *  practice: ffmpeg can exit 0 while writing a 0-byte file when the seek
+   *  target is past the last frame). */
   async generateThumbnail(videoPath: string): Promise<string | null> {
     const thumbnailPath = path.join(path.dirname(videoPath), 'thumbnail.jpg')
+    const extractedAtOneSecond = await this.extractFrame(videoPath, thumbnailPath, '00:00:01')
+    if (extractedAtOneSecond) return thumbnailPath
+
+    logger.warn('Thumbnail at 1s produced nothing, retrying from the first frame', { videoPath })
+    const extractedAtStart = await this.extractFrame(videoPath, thumbnailPath, null)
+    return extractedAtStart ? thumbnailPath : null
+  }
+
+  private extractFrame(videoPath: string, outputPath: string, seekTo: string | null): Promise<boolean> {
     const ffmpegPath = resolveFfmpegPath()
+    const args = ['-y', ...(seekTo ? ['-ss', seekTo] : []), '-i', videoPath, '-frames:v', '1', '-q:v', '3', outputPath]
     return new Promise((resolve) => {
-      const child = spawn(ffmpegPath, [
-        '-y',
-        '-ss',
-        '00:00:01',
-        '-i',
-        videoPath,
-        '-frames:v',
-        '1',
-        '-q:v',
-        '3',
-        thumbnailPath
-      ])
+      const child = spawn(ffmpegPath, args)
       child.on('exit', (code) => {
-        if (code === 0 && fs.existsSync(thumbnailPath)) {
-          resolve(thumbnailPath)
-        } else {
-          logger.warn('Thumbnail generation failed', { videoPath, code })
-          resolve(null)
+        let success = false
+        try {
+          success = code === 0 && fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0
+        } catch {
+          success = false
         }
+        if (!success) logger.warn('Thumbnail frame extraction failed', { videoPath, seekTo, code })
+        resolve(success)
       })
       child.on('error', (err) => {
-        logger.warn('Thumbnail generation errored', { videoPath, error: err.message })
-        resolve(null)
+        logger.warn('Thumbnail frame extraction errored', { videoPath, seekTo, error: err.message })
+        resolve(false)
       })
     })
   }
 }
+
+const PREVIEW_FRAME_FPS = 6
+const PREVIEW_FRAME_WIDTH = 640
 
 function buildRecordArgs(input: {
   /** Either the DirectShow "Alternative name" device path (unambiguous even
@@ -270,6 +293,13 @@ function buildRecordArgs(input: {
   fps: number
   bitrateKbps: number
   outputPath: string
+  /** A second output branch off this same capture session - a small,
+   *  throttled JPEG continuously overwritten at the same path, which is what
+   *  lets the dashboard show a live image during recording without ever
+   *  opening the camera a second time (see CameraManager's ownership
+   *  handoff). Omitted entirely for the diagnostics test-recording call,
+   *  which has no dashboard preview to feed. */
+  previewFramePath: string | null
   overlay: { config: OverlayConfig; textFilePath: string } | null
 }): string[] {
   const deviceSpec = input.micName
@@ -292,28 +322,39 @@ function buildRecordArgs(input: {
     deviceSpec
   ]
 
+  // Output 1: the actual recording, exactly as before.
+  args.push('-map', '0:v:0')
   if (input.overlay?.config.enabled) {
     args.push('-vf', buildOverlayFilter(input.overlay.config, input.overlay.textFilePath))
   }
-
-  args.push(
-    '-c:v',
-    'libx264',
-    '-preset',
-    'veryfast',
-    '-pix_fmt',
-    'yuv420p',
-    '-b:v',
-    `${input.bitrateKbps}k`
-  )
-
+  args.push('-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-b:v', `${input.bitrateKbps}k`)
   if (input.micName) {
-    args.push('-c:a', 'aac', '-b:a', '128k')
+    args.push('-map', '0:a:0', '-c:a', 'aac', '-b:a', '128k')
   } else {
     args.push('-an')
   }
-
   args.push('-movflags', '+faststart', '-y', input.outputPath)
+
+  // Output 2 (optional): the live-preview frame. No burned-in overlay here -
+  // the dashboard already draws barcode/station/camera/timer as a CSS layer
+  // on top (see OverlayPreview), so this only needs to be a small, cheap,
+  // continuously-refreshed image, not a duplicate of the recording's own
+  // drawtext output.
+  if (input.previewFramePath) {
+    args.push(
+      '-map',
+      '0:v:0',
+      '-vf',
+      `fps=${PREVIEW_FRAME_FPS},scale=${PREVIEW_FRAME_WIDTH}:-2`,
+      '-q:v',
+      '6',
+      '-update',
+      '1',
+      '-y',
+      input.previewFramePath
+    )
+  }
+
   return args
 }
 

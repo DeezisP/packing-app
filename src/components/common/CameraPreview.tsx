@@ -40,21 +40,30 @@ export function CameraPreview({
   className,
   children
 }: CameraPreviewProps): JSX.Element {
-  const { videoRef, error, releasedForRecording } = useCameraPreview(cameraId, cameras, stationId)
+  const { videoRef, error, releasedForRecording, previewFrameUrl } = useCameraPreview(cameraId, cameras, stationId)
   const isConfigured = configured ?? Boolean(cameraId)
 
   return (
     <div className={`relative aspect-video bg-black overflow-hidden ${className ?? ''}`}>
       <video ref={videoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
+      {/* While recording, ffmpeg (not getUserMedia) owns the camera - this is
+          a second output off that same capture session (see RecordingEngine),
+          not a second camera connection, so the operator keeps seeing a live
+          (if throttled/downscaled) image instead of a black or frozen
+          screen. Sits over the <video> element, which has no active stream
+          during this window. */}
+      {cameraId && releasedForRecording && previewFrameUrl && (
+        <img src={previewFrameUrl} className="absolute inset-0 w-full h-full object-cover" />
+      )}
+      {cameraId && releasedForRecording && !previewFrameUrl && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black text-slate-300 text-sm px-4 text-center">
+          {strings.camera.previewStartingForRecording}
+        </div>
+      )}
       {overlay}
       {!isConfigured && (
         <div className="absolute inset-0 flex items-center justify-center text-zinc-400 text-sm">
           {placeholderText ?? strings.stationCard.noCameraAssigned}
-        </div>
-      )}
-      {cameraId && releasedForRecording && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/70 text-slate-300 text-sm px-4 text-center">
-          {strings.camera.previewPausedForRecording}
         </div>
       )}
       {cameraId && !releasedForRecording && error && (

@@ -17,7 +17,12 @@ protocol.registerSchemesAsPrivileged([
  *  between the dev server origin and the packaged file:// origin. */
 export function registerMediaProtocol(): void {
   protocol.handle(MEDIA_SCHEME, (request) => {
-    const absolutePath = decodeURIComponent(request.url.replace(`${MEDIA_SCHEME}://`, ''))
+    // Strip any query string before decoding the path - callers polling a
+    // continuously-overwritten file (see the live recording-preview frame)
+    // append a cache-busting `?t=...` to force a fresh read past any HTTP
+    // caching, which must never become part of the file path itself.
+    const withoutScheme = request.url.replace(`${MEDIA_SCHEME}://`, '').split('?')[0]
+    const absolutePath = decodeURIComponent(withoutScheme)
     return net.fetch(pathToFileURL(absolutePath).toString())
   })
 }
