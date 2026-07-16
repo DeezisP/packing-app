@@ -6,7 +6,7 @@ import { RecordingStatus } from '../common/RecordingStatus'
 import { useOverlayFieldData } from '../../hooks/useOverlayFieldData'
 import { OverlayPreview } from '../common/OverlayPreview'
 import { strings } from '../../lib/strings'
-import { resolveStationCameraId } from '../../../electron/shared/types'
+import { resolveStationCameraId, QUALITY_PRESETS } from '../../../electron/shared/types'
 import type { StationConfig, StationRuntimeState, OverlayConfig, CameraDevice } from '../../../electron/shared/types'
 
 interface Props {
@@ -72,6 +72,10 @@ function StationCardImpl({ station, state, overlayConfig, cameras, isActive, hot
         <div className="flex items-center justify-between text-sm">
           <span className="text-slate-500">{strings.stationCard.camera}</span>
           <span className="text-slate-300 truncate max-w-[60%]">{cameraDisplayName}</span>
+        </div>
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-slate-500">{strings.stationCard.recordingQuality}</span>
+          <span className="text-slate-300 truncate max-w-[60%]">{QUALITY_PRESETS[station.qualityPreset].label}</span>
         </div>
         <DeviceStatus
           label={strings.stationCard.scanner}

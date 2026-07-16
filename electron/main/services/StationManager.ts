@@ -11,7 +11,7 @@ import { writeRecordingMetadata } from './MetadataService'
 import { getDiskUsage, CRITICAL_DISK_STOP_BYTES } from './DiskMonitor'
 import { validateSaveLocation } from './SaveLocationValidator'
 import { logger } from './Logger'
-import { RESOLUTION_PRESETS, buildCameraDisplayNames, validateStations } from '@shared/types'
+import { QUALITY_PRESETS, buildCameraDisplayNames, validateStations, isPresetSupported } from '@shared/types'
 import type {
   StationRuntimeState,
   WrongBarcodeEvent,
@@ -386,6 +386,19 @@ class StationManager extends EventEmitter {
     }
     const cameraDisplayName = buildCameraDisplayNames(cameraManager.getLastKnownDevices()).get(camera.id) ?? camera.name
 
+    const preset = QUALITY_PRESETS[station.qualityPreset]
+    const capabilities = await cameraManager.getCapabilities(camera.id)
+    if (!isPresetSupported(preset, capabilities)) {
+      const message = `กล้องนี้ไม่รองรับคุณภาพการบันทึก "${preset.label}" - เลือกคุณภาพอื่นในหน้าตั้งค่า`
+      this.setState(stationId, { status: 'error', lastError: message })
+      logger.error('Cannot start recording: camera does not support selected quality preset', {
+        stationId,
+        preset: preset.id,
+        cameraId: camera.id
+      })
+      return
+    }
+
     const locationStatus = await validateSaveLocation(saveLocation)
     if (!locationStatus.exists || !locationStatus.writable) {
       const message = locationStatus.error ?? 'Save folder is unavailable - configure a valid folder in Settings'
@@ -417,13 +430,12 @@ class StationManager extends EventEmitter {
 
     try {
       const result = await recordingEngine.start(station, camera.id, barcode, saveLocation, overlay)
-      const resolution = RESOLUTION_PRESETS[station.resolutionPreset]
       const dbId = database.insertRecordingStart({
         barcode,
         station: station.name,
         camera: cameraDisplayName,
         videoPath: result.videoPath,
-        resolution: `${resolution.width}x${resolution.height}`,
+        resolution: `${preset.width}x${preset.height}`,
         fps: station.fps,
         bitrateKbps: station.bitrateKbps
       })
@@ -482,7 +494,7 @@ class StationManager extends EventEmitter {
     if (!state.videoPath || !state.startedAt || !state.barcode) return
     const station = this.getStationConfig(stationId)
     if (!station) return
-    const resolution = RESOLUTION_PRESETS[station.resolutionPreset]
+    const resolution = QUALITY_PRESETS[station.qualityPreset]
     writeRecordingMetadata({
       videoPath: state.videoPath,
       barcode: state.barcode,

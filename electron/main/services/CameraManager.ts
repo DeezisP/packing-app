@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import { resolveFfmpegPath } from './FfmpegLocator'
 import { logger } from './Logger'
 import { resolveStationCameraId } from '@shared/types'
-import type { CameraDevice, StationConfig } from '@shared/types'
+import type { CameraDevice, StationConfig, CameraCapabilityOption } from '@shared/types'
 
 const POLL_INTERVAL_MS = 5000
 
@@ -15,6 +15,8 @@ class CameraManager extends EventEmitter {
   private lastAudioDevices: string[] = []
   private lastRawOutput = ''
   private pollTimer: NodeJS.Timeout | null = null
+  private capabilitiesCache = new Map<string, CameraCapabilityOption[]>()
+  private capabilitiesInFlight = new Map<string, Promise<CameraCapabilityOption[]>>()
 
   private runDshowListing(): Promise<{ video: CameraDevice[]; audio: string[] }> {
     return new Promise((resolve) => {
@@ -77,11 +79,78 @@ class CameraManager extends EventEmitter {
       logEnumeration(result.video, result.audio)
       this.emit('changed', result)
     }
+    this.prewarmCapabilities(result.video)
     return result
   }
 
   getLastKnownDevices(): CameraDevice[] {
     return this.lastVideoDevices
+  }
+
+  /** Resolutions/frame-rates a specific camera actually reports supporting
+   *  (via ffmpeg's `-list_options`), cached per device id for the life of the
+   *  process - probing spawns ffmpeg and briefly opens the device, so it's
+   *  only worth doing once per camera rather than before every recording
+   *  start. Concurrent callers for the same id share one in-flight probe
+   *  instead of racing duplicate ffmpeg processes against each other. */
+  async getCapabilities(cameraId: string): Promise<CameraCapabilityOption[]> {
+    const cached = this.capabilitiesCache.get(cameraId)
+    if (cached) return cached
+
+    const inFlight = this.capabilitiesInFlight.get(cameraId)
+    if (inFlight) return inFlight
+
+    const promise = this.probeCapabilities(cameraId)
+    this.capabilitiesInFlight.set(cameraId, promise)
+    try {
+      const result = await promise
+      this.capabilitiesCache.set(cameraId, result)
+      return result
+    } finally {
+      this.capabilitiesInFlight.delete(cameraId)
+    }
+  }
+
+  private probeCapabilities(cameraId: string): Promise<CameraCapabilityOption[]> {
+    return new Promise((resolve) => {
+      const ffmpegPath = resolveFfmpegPath()
+      const child = spawn(ffmpegPath, [
+        '-hide_banner',
+        '-f',
+        'dshow',
+        '-list_options',
+        'true',
+        '-i',
+        `video=${cameraId}`
+      ])
+      let stderr = ''
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString()
+      })
+      child.on('error', (err) => {
+        logger.warn('Camera capability probe failed to start', { cameraId, error: err.message })
+        resolve([])
+      })
+      child.on('close', () => {
+        const capabilities = parseDshowOptions(stderr)
+        logger.info('Camera capability probe complete', { cameraId, modes: capabilities.length })
+        resolve(capabilities)
+      })
+      setTimeout(() => {
+        if (!child.killed) child.kill()
+      }, 8000)
+    })
+  }
+
+  /** Fire-and-forget background probing for every currently-known camera not
+   *  already cached, so the first barcode scan at a station doesn't pay the
+   *  ~1-2s ffmpeg probe cost - by the time a scan happens the answer is
+   *  usually already cached. Never blocks or throws into the caller. */
+  private prewarmCapabilities(devices: CameraDevice[]): void {
+    for (const device of devices) {
+      if (this.capabilitiesCache.has(device.id) || this.capabilitiesInFlight.has(device.id)) continue
+      this.getCapabilities(device.id).catch(() => undefined)
+    }
   }
 
   /** Resolves a station's configured camera against the most recently
@@ -189,6 +258,42 @@ function parseDshowOutput(stderr: string): { video: CameraDevice[]; audio: strin
   }
 
   return { video, audio }
+}
+
+/** Parses ffmpeg's `-f dshow -list_options true` stderr output into the
+ *  discrete (width, height, max fps) modes a device supports. Real-world
+ *  dshow drivers print one line per pixel format per resolution, e.g.:
+ *    vcodec=mjpeg  min s=640x480 fps=5 max s=640x480 fps=30
+ *  When min/max resolution match (by far the common case for UVC webcams),
+ *  that's one discrete mode whose achievable frame rate tops out at the
+ *  "max fps" value. A driver that instead reports a genuine range across
+ *  differing min/max resolutions has both endpoints recorded as separate
+ *  modes - an approximation, but a safe one: it only ever under-reports
+ *  capability (never claims support for a mode that was never mentioned).
+ *  Multiple pixel formats can report the same resolution; the highest fps
+ *  seen for a given resolution across all of them wins, since ffmpeg is free
+ *  to pick whichever pixel format satisfies the requested mode. */
+function parseDshowOptions(stderr: string): CameraCapabilityOption[] {
+  const regex = /min s=(\d+)x(\d+) fps=([\d.]+) max s=(\d+)x(\d+) fps=([\d.]+)/g
+  const byResolution = new Map<string, CameraCapabilityOption>()
+
+  let match: RegExpExecArray | null
+  while ((match = regex.exec(stderr)) !== null) {
+    const [, minW, minH, minFps, maxW, maxH, maxFps] = match
+    const points: Array<[number, number, number]> = [
+      [Number(minW), Number(minH), Number(minFps)],
+      [Number(maxW), Number(maxH), Number(maxFps)]
+    ]
+    for (const [width, height, fps] of points) {
+      const key = `${width}x${height}`
+      const existing = byResolution.get(key)
+      if (!existing || fps > existing.maxFps) {
+        byResolution.set(key, { width, height, maxFps: fps })
+      }
+    }
+  }
+
+  return Array.from(byResolution.values())
 }
 
 /** Logs the exact per-device breakdown requested for camera-pipeline

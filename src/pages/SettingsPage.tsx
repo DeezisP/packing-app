@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { RESOLUTION_PRESETS, buildCameraDisplayNames } from '../../electron/shared/types'
+import { QUALITY_PRESETS, DEFAULT_QUALITY_PRESET_ID, buildCameraDisplayNames, isPresetSupported } from '../../electron/shared/types'
 import { UpdatePanel } from '../components/common/UpdatePanel'
 import { OverlayPreview } from '../components/common/OverlayPreview'
 import { GlassPanel } from '../components/common/GlassPanel'
@@ -11,6 +11,7 @@ import { TestCameraModal } from '../components/pairing/TestCameraModal'
 import { DiagnosticsPanel } from '../components/settings/DiagnosticsPanel'
 import { useUpdateState } from '../hooks/useUpdateState'
 import { useCameraDevices } from '../hooks/useCameraDevices'
+import { useCameraCapabilities } from '../hooks/useCameraCapabilities'
 import { formatBytes } from '../lib/format'
 import { strings } from '../lib/strings'
 import type {
@@ -19,7 +20,8 @@ import type {
   CameraDevice,
   ThemeMode,
   SaveLocationStatus,
-  OverlayConfig
+  OverlayConfig,
+  QualityPresetId
 } from '../../electron/shared/types'
 
 interface Props {
@@ -113,9 +115,9 @@ export function SettingsPage({ config, onConfigChanged }: Props): JSX.Element {
       cameraId: null,
       cameraName: null,
       micName: null,
-      resolutionPreset: '1080p',
-      fps: 30,
-      bitrateKbps: 8000,
+      qualityPreset: DEFAULT_QUALITY_PRESET_ID,
+      fps: QUALITY_PRESETS[DEFAULT_QUALITY_PRESET_ID].fps,
+      bitrateKbps: QUALITY_PRESETS[DEFAULT_QUALITY_PRESET_ID].bitrateKbps,
       scannerDeviceId: null,
       saveLocationOverride: null
     }
@@ -478,6 +480,14 @@ function StationSettingsCard({
   removable: boolean
 }): JSX.Element {
   const usesGlobalSaveLocation = station.saveLocationOverride === null
+  const capabilities = useCameraCapabilities(station.cameraId)
+  const currentPreset = QUALITY_PRESETS[station.qualityPreset]
+  const currentPresetUnsupported = capabilities !== null && !isPresetSupported(currentPreset, capabilities)
+
+  function selectPreset(id: QualityPresetId): void {
+    const preset = QUALITY_PRESETS[id]
+    onChange({ qualityPreset: id, fps: preset.fps, bitrateKbps: preset.bitrateKbps })
+  }
 
   return (
     <motion.div
@@ -563,45 +573,31 @@ function StationSettingsCard({
           </select>
         </Field>
 
-        <Field label={strings.settings.resolution}>
-          <select
-            value={station.resolutionPreset}
-            onChange={(e) => onChange({ resolutionPreset: e.target.value as StationConfig['resolutionPreset'] })}
-            className="w-full bg-surface-800/60 border border-white/10 rounded-lg px-2 py-1.5 text-sm"
-          >
-            {Object.keys(RESOLUTION_PRESETS).map((key) => (
-              <option key={key} value={key}>
-                {key}
-              </option>
-            ))}
-          </select>
-        </Field>
-
-        <Field label={strings.settings.fps}>
-          <select
-            value={station.fps}
-            onChange={(e) => onChange({ fps: Number(e.target.value) })}
-            className="w-full bg-surface-800/60 border border-white/10 rounded-lg px-2 py-1.5 text-sm"
-          >
-            {[24, 30, 60].map((fps) => (
-              <option key={fps} value={fps}>
-                {fps}
-              </option>
-            ))}
-          </select>
-        </Field>
-
-        <Field label={strings.settings.bitrate}>
-          <input
-            type="number"
-            min={1000}
-            max={50000}
-            step={500}
-            value={station.bitrateKbps}
-            onChange={(e) => onChange({ bitrateKbps: Number(e.target.value) })}
-            className="w-full bg-surface-800/60 border border-white/10 rounded-lg px-2 py-1.5 text-sm"
-          />
-        </Field>
+        <div className="col-span-2">
+          <Field label={strings.settings.qualityPreset}>
+            <select
+              value={station.qualityPreset}
+              onChange={(e) => selectPreset(e.target.value as QualityPresetId)}
+              className="w-full bg-surface-800/60 border border-white/10 rounded-lg px-2 py-1.5 text-sm"
+            >
+              {Object.values(QUALITY_PRESETS).map((preset) => {
+                const supported = capabilities === null || isPresetSupported(preset, capabilities)
+                return (
+                  <option key={preset.id} value={preset.id} disabled={!supported}>
+                    {preset.label} - {preset.width}×{preset.height} {preset.fps}fps
+                    {!supported ? ` (${strings.settings.qualityPresetUnsupportedSuffix})` : ''}
+                  </option>
+                )
+              })}
+            </select>
+            <p className="text-xs text-slate-500 mt-1">
+              {currentPreset.width}×{currentPreset.height} · {currentPreset.fps} FPS · {(currentPreset.bitrateKbps / 1000).toFixed(0)} Mbps
+            </p>
+            {currentPresetUnsupported && (
+              <p className="text-xs text-warn-500 mt-1">{strings.settings.qualityPresetUnsupportedWarning(currentPreset.label)}</p>
+            )}
+          </Field>
+        </div>
 
         <div className="col-span-2 md:col-span-4">
           <span className="block text-xs text-slate-500 mb-1">{strings.settings.saveLocationOverride}</span>

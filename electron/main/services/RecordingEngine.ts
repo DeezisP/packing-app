@@ -5,7 +5,7 @@ import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import { resolveFfmpegPath } from './FfmpegLocator'
 import { logger } from './Logger'
-import { RESOLUTION_PRESETS, type StationConfig, type OverlayConfig } from '@shared/types'
+import { QUALITY_PRESETS, type StationConfig, type OverlayConfig } from '@shared/types'
 
 const SYSTEM_FONT_FILE = 'C:/Windows/Fonts/arial.ttf'
 
@@ -47,13 +47,13 @@ class RecordingEngine extends EventEmitter {
     fs.mkdirSync(outputDir, { recursive: true })
     const videoPath = path.join(outputDir, 'packing.mp4')
 
-    const resolution = RESOLUTION_PRESETS[station.resolutionPreset]
+    const preset = QUALITY_PRESETS[station.qualityPreset]
     const ffmpegPath = resolveFfmpegPath()
     const args = buildRecordArgs({
       cameraDeviceId,
       micName: station.micName,
-      width: resolution.width,
-      height: resolution.height,
+      width: preset.width,
+      height: preset.height,
       fps: station.fps,
       bitrateKbps: station.bitrateKbps,
       outputPath: videoPath,
@@ -100,7 +100,7 @@ class RecordingEngine extends EventEmitter {
       this.emit('unexpectedExit', { stationId: station.id, barcode, message: err.message })
     })
 
-    return { outputDir, videoPath, resolutionLabel: station.resolutionPreset }
+    return { outputDir, videoPath, resolutionLabel: preset.label }
   }
 
   /** Gracefully stops ffmpeg by writing 'q' to stdin, which tells it to finish

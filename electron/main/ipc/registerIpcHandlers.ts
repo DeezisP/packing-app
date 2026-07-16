@@ -80,6 +80,8 @@ export function registerIpcHandlers(): void {
     return { video, audio }
   })
 
+  ipcMain.handle(IPC.camerasGetCapabilities, (_e, cameraId: string) => cameraManager.getCapabilities(cameraId))
+
   // Gathers every independent camera-detection source (ffmpeg/DirectShow,
   // Windows PnP) plus current station assignments and recent logs in one
   // call, for Settings -> Diagnostics. Chromium's own device list can only
@@ -134,6 +136,34 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.recordingsOpenFolder, (_e, videoPath: string) => {
     shell.showItemInFolder(videoPath)
+  })
+
+  // Deletes a recording's entire folder (packing.mp4, thumbnail.jpg,
+  // metadata.json, anything else written alongside them) and, only if that
+  // succeeds, removes the database row - never the other way around, so a
+  // failed file delete can never leave an orphaned "phantom" database entry
+  // with no files behind it.
+  ipcMain.handle(IPC.recordingsDelete, async (_e, id: number) => {
+    const record = database.getById(id)
+    if (!record) {
+      return { success: false, error: 'ไม่พบรายการบันทึกนี้ในฐานข้อมูล' }
+    }
+    if (record.status === 'recording') {
+      return { success: false, error: 'ไม่สามารถลบได้ - การบันทึกนี้กำลังทำงานอยู่' }
+    }
+
+    const folder = path.dirname(record.videoPath)
+    try {
+      await fs.promises.rm(folder, { recursive: true, force: true })
+    } catch (err) {
+      const message = (err as Error).message
+      logger.error('Failed to delete recording folder', { id, folder, error: message })
+      return { success: false, error: message }
+    }
+
+    database.deleteRecord(id)
+    logger.info('Recording deleted', { id, barcode: record.barcode, folder })
+    return { success: true, error: null }
   })
 
   ipcMain.handle(IPC.recordingsBackupDatabase, async () => {

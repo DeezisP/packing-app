@@ -6,11 +6,50 @@ export interface Resolution {
   height: number
 }
 
-export const RESOLUTION_PRESETS: Record<string, Resolution> = {
-  '720p': { width: 1280, height: 720 },
-  '1080p': { width: 1920, height: 1080 },
-  '1440p': { width: 2560, height: 1440 },
-  '4K': { width: 3840, height: 2160 }
+/** A named recording-quality mode optimized for the EMEET SmartCam S600 -
+ *  selecting one atomically sets resolution, frame rate, and encoder bitrate
+ *  together, so there is never a free-form/inconsistent combination of the
+ *  three (see StationConfig.qualityPreset, the only place these values are
+ *  chosen from). */
+export interface QualityPreset {
+  id: string
+  label: string
+  width: number
+  height: number
+  fps: number
+  bitrateKbps: number
+}
+
+export const QUALITY_PRESETS = {
+  '4k30': { id: '4k30', label: 'Ultra HD (4K)', width: 3840, height: 2160, fps: 30, bitrateKbps: 25000 },
+  '1080p60': { id: '1080p60', label: 'Full HD High Frame Rate', width: 1920, height: 1080, fps: 60, bitrateKbps: 12000 },
+  '1080p30': { id: '1080p30', label: 'Full HD Standard', width: 1920, height: 1080, fps: 30, bitrateKbps: 8000 },
+  '720p30': { id: '720p30', label: 'HD', width: 1280, height: 720, fps: 30, bitrateKbps: 5000 },
+  '480p30': { id: '480p30', label: 'Low Bandwidth', width: 640, height: 480, fps: 30, bitrateKbps: 2000 }
+} as const satisfies Record<string, QualityPreset>
+
+export type QualityPresetId = keyof typeof QUALITY_PRESETS
+
+export const DEFAULT_QUALITY_PRESET_ID: QualityPresetId = '1080p30'
+
+/** One resolution/frame-rate combination a camera reported it can actually
+ *  produce (via ffmpeg's `-list_options`, see CameraManager.getCapabilities) -
+ *  `maxFps` is the highest frame rate that resolution supports, not
+ *  necessarily the only one. */
+export interface CameraCapabilityOption {
+  width: number
+  height: number
+  maxFps: number
+}
+
+/** Whether a quality preset is achievable on a camera, given its detected
+ *  capabilities. An empty `capabilities` list means detection didn't produce
+ *  anything usable (unsupported driver, probe failure, or not probed yet) -
+ *  in that case every preset is treated as supported (fail open) rather than
+ *  blocking recording on an inconclusive probe. */
+export function isPresetSupported(preset: QualityPreset, capabilities: readonly CameraCapabilityOption[]): boolean {
+  if (capabilities.length === 0) return true
+  return capabilities.some((c) => c.width === preset.width && c.height === preset.height && c.maxFps >= preset.fps - 0.5)
 }
 
 export interface CameraDevice {
@@ -97,7 +136,11 @@ export interface StationConfig {
    *  that only ever stored a name - see resolveStationCameraId(). */
   cameraName: string | null
   micName: string | null
-  resolutionPreset: keyof typeof RESOLUTION_PRESETS
+  /** Drives resolution, fps, and bitrate together - see QUALITY_PRESETS.
+   *  `fps`/`bitrateKbps` below are kept in sync with this by ConfigManager
+   *  (normalizeStation) so RecordingEngine/StationManager/Database, which
+   *  already read `fps`/`bitrateKbps` directly, need no changes of their own. */
+  qualityPreset: QualityPresetId
   fps: number
   bitrateKbps: number
   scannerDeviceId: string | null
@@ -275,6 +318,10 @@ export interface RecordingRecord {
   status: RecordingStatus
   createdDate: string
   lastViewed: string | null
+  /** Current size of packing.mp4 in bytes, read from disk at query time (not
+   *  stored in the database) - always reflects the real file, including one
+   *  still growing while `status === 'recording'`. 0 if the file is missing. */
+  fileSize: number
 }
 
 export interface SearchFilters {
@@ -429,4 +476,9 @@ export interface DiagnosticsTestResult {
   success: boolean
   error: string | null
   ffmpegCommand: string
+}
+
+export interface DeleteRecordingResult {
+  success: boolean
+  error: string | null
 }

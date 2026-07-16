@@ -15,7 +15,9 @@ import type {
   UpdateState,
   DiagnosticsSnapshot,
   DiagnosticsTestResult,
-  StationValidationIssue
+  StationValidationIssue,
+  DeleteRecordingResult,
+  CameraCapabilityOption
 } from '@shared/types'
 
 const api = {
@@ -86,7 +88,9 @@ const api = {
       return (): void => {
         ipcRenderer.removeListener(IPC.cameraOnListChanged, listener)
       }
-    }
+    },
+    getCapabilities: (cameraId: string): Promise<CameraCapabilityOption[]> =>
+      ipcRenderer.invoke(IPC.camerasGetCapabilities, cameraId)
   },
   diagnostics: {
     get: (): Promise<DiagnosticsSnapshot> => ipcRenderer.invoke(IPC.diagnosticsGet),
@@ -117,6 +121,7 @@ const api = {
     getRecent: (limit: number): Promise<RecordingRecord[]> => ipcRenderer.invoke(IPC.recordingsGetRecent, limit),
     markViewed: (id: number): Promise<void> => ipcRenderer.invoke(IPC.recordingsMarkViewed, id),
     openFolder: (videoPath: string): Promise<void> => ipcRenderer.invoke(IPC.recordingsOpenFolder, videoPath),
+    delete: (id: number): Promise<DeleteRecordingResult> => ipcRenderer.invoke(IPC.recordingsDelete, id),
     backupDatabase: (): Promise<string> => ipcRenderer.invoke(IPC.recordingsBackupDatabase)
   },
   system: {

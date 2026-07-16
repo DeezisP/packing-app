@@ -3,7 +3,8 @@ import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import { defaultPaths, resolveSaveLocation } from './PathService'
 import { logger } from './Logger'
-import type { AppConfig, StationConfig } from '@shared/types'
+import { QUALITY_PRESETS, DEFAULT_QUALITY_PRESET_ID } from '@shared/types'
+import type { AppConfig, StationConfig, QualityPresetId } from '@shared/types'
 
 class ConfigManager extends EventEmitter {
   private config: AppConfig
@@ -122,19 +123,44 @@ class ConfigManager extends EventEmitter {
   }
 }
 
+// Maps a config written before the Ultra HD (4K) / Full HD 60fps / Full HD /
+// HD / Low Bandwidth preset system existed (which only stored a bare
+// resolution string like "1080p" plus independently-editable fps/bitrate) to
+// the closest new preset - "1080p" + fps 60 becomes the high-frame-rate
+// preset specifically, since that combination has no other equivalent.
+const LEGACY_RESOLUTION_TO_PRESET: Record<string, QualityPresetId> = {
+  '4K': '4k30',
+  '1440p': '1080p30',
+  '1080p': '1080p30',
+  '720p': '720p30'
+}
+
+function migrateQualityPreset(station: Partial<StationConfig> & { resolutionPreset?: string }): QualityPresetId {
+  if (station.qualityPreset && station.qualityPreset in QUALITY_PRESETS) return station.qualityPreset
+  const legacy = station.resolutionPreset
+  if (legacy === '1080p' && station.fps === 60) return '1080p60'
+  if (legacy && legacy in LEGACY_RESOLUTION_TO_PRESET) return LEGACY_RESOLUTION_TO_PRESET[legacy]
+  return DEFAULT_QUALITY_PRESET_ID
+}
+
 // Fills in fields added after a config might have already been written to
 // disk, so upgrading never silently hides or misconfigures an existing
 // station (a missing `enabled` must default to true, not false).
 function normalizeStation(station: Partial<StationConfig> & { id: string; name: string }): StationConfig {
+  const qualityPreset = migrateQualityPreset(station)
+  const preset = QUALITY_PRESETS[qualityPreset]
   return {
     ...station,
     enabled: station.enabled ?? true,
     cameraId: station.cameraId ?? null,
     cameraName: station.cameraName ?? null,
     micName: station.micName ?? null,
-    resolutionPreset: station.resolutionPreset ?? '1080p',
-    fps: station.fps ?? 30,
-    bitrateKbps: station.bitrateKbps ?? 8000,
+    qualityPreset,
+    // Always derived from the preset, never independently stored - see the
+    // qualityPreset doc comment on StationConfig. This also repairs any
+    // legacy config that had a hand-edited/inconsistent fps or bitrate.
+    fps: preset.fps,
+    bitrateKbps: preset.bitrateKbps,
     scannerDeviceId: station.scannerDeviceId ?? null,
     saveLocationOverride: station.saveLocationOverride ?? null
   }

@@ -56,6 +56,18 @@ interface RecordingRow {
   last_viewed: string | null
 }
 
+/** Reads the current file size straight off disk rather than trusting a
+ *  stored value, so it's always right even for a recording still being
+ *  written to, or a file that's since been moved/deleted out from under the
+ *  database. */
+function statSizeSafe(videoPath: string): number {
+  try {
+    return fs.statSync(videoPath).size
+  } catch {
+    return 0
+  }
+}
+
 function rowToRecord(row: RecordingRow): RecordingRecord {
   return {
     id: row.id,
@@ -74,7 +86,8 @@ function rowToRecord(row: RecordingRow): RecordingRecord {
     bitrateKbps: row.bitrate_kbps,
     status: row.status,
     createdDate: row.created_date,
-    lastViewed: row.last_viewed
+    lastViewed: row.last_viewed,
+    fileSize: statSizeSafe(row.video_path)
   }
 }
 
@@ -195,6 +208,20 @@ class DatabaseService {
       barcode
     ])
     return row ? rowToRecord(row) : null
+  }
+
+  getById(id: number): RecordingRecord | null {
+    const row = this.queryOne<RecordingRow>(`SELECT * FROM recordings WHERE id = ?`, [id])
+    return row ? rowToRecord(row) : null
+  }
+
+  /** Removes only the database row - callers (see recordings:delete in
+   *  registerIpcHandlers) must delete the recording's files first and only
+   *  call this once that succeeded, so a failed file delete never leaves the
+   *  database out of sync with what's actually on disk. */
+  deleteRecord(id: number): void {
+    this.run(`DELETE FROM recordings WHERE id = ?`, [id])
+    this.flush()
   }
 
   search(filters: SearchFilters): RecordingRecord[] {

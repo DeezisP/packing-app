@@ -26,6 +26,7 @@ export const IPC = {
   // Cameras
   camerasList: 'cameras:list',
   cameraOnListChanged: 'cameras:onListChanged',
+  camerasGetCapabilities: 'cameras:getCapabilities',
 
   // Diagnostics
   diagnosticsGet: 'diagnostics:get',
@@ -42,6 +43,7 @@ export const IPC = {
   recordingsGetRecent: 'recordings:getRecent',
   recordingsMarkViewed: 'recordings:markViewed',
   recordingsOpenFolder: 'recordings:openFolder',
+  recordingsDelete: 'recordings:delete',
   recordingsBackupDatabase: 'recordings:backupDatabase',
 
   // System

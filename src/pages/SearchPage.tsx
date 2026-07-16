@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react'
 import { AnimatePresence } from 'framer-motion'
 import { VideoPlayerModal } from '../components/search/VideoPlayerModal'
+import { DeleteRecordingDialog } from '../components/search/DeleteRecordingDialog'
 import { GlassPanel } from '../components/common/GlassPanel'
-import { formatDateTime, formatDuration } from '../lib/format'
+import { AnimatedButton } from '../components/common/AnimatedButton'
+import { NotificationToast } from '../components/common/NotificationToast'
+import { formatDateTime, formatDuration, formatBytes } from '../lib/format'
 import { strings } from '../lib/strings'
 import type { AppConfig, RecordingRecord, SearchFilters } from '../../electron/shared/types'
 
@@ -12,10 +15,16 @@ interface Props {
 
 const T = strings.search
 
+type ToastTone = 'success' | 'danger'
+type ToastState = { tone: ToastTone; message: string } | null
+
 export function SearchPage({ config }: Props): JSX.Element {
   const [filters, setFilters] = useState<SearchFilters>({})
   const [results, setResults] = useState<RecordingRecord[]>([])
   const [selected, setSelected] = useState<RecordingRecord | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<RecordingRecord | null>(null)
+  const [deletingId, setDeletingId] = useState<number | null>(null)
+  const [toast, setToast] = useState<ToastState>(null)
   const cameraNames = Array.from(new Set(config.stations.map((s) => s.cameraName).filter(Boolean))) as string[]
 
   useEffect(() => {
@@ -32,6 +41,33 @@ export function SearchPage({ config }: Props): JSX.Element {
     const next = { ...filters, ...partial }
     setFilters(next)
     runSearch(next)
+  }
+
+  function showToast(tone: ToastTone, message: string): void {
+    setToast({ tone, message })
+    window.setTimeout(() => setToast(null), 4000)
+  }
+
+  async function confirmDelete(): Promise<void> {
+    if (!pendingDelete) return
+    const target = pendingDelete
+    setDeletingId(target.id)
+
+    // Stop playback immediately if the recording being deleted is currently open.
+    if (selected?.id === target.id) setSelected(null)
+
+    try {
+      const result = await window.electronAPI.recordings.delete(target.id)
+      if (result.success) {
+        setResults((prev) => prev.filter((r) => r.id !== target.id))
+        showToast('success', T.deleteSuccess(target.barcode))
+      } else {
+        showToast('danger', T.deleteFailed(result.error ?? T.deleteFailedUnknown))
+      }
+    } finally {
+      setDeletingId(null)
+      setPendingDelete(null)
+    }
   }
 
   return (
@@ -87,55 +123,98 @@ export function SearchPage({ config }: Props): JSX.Element {
       </GlassPanel>
 
       <GlassPanel className="overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="bg-white/[0.03] text-slate-500 text-xs uppercase">
-            <tr>
-              <th className="text-left px-4 py-2">{T.colThumbnail}</th>
-              <th className="text-left px-4 py-2">{T.colBarcode}</th>
-              <th className="text-left px-4 py-2">{T.colStation}</th>
-              <th className="text-left px-4 py-2">{T.colCamera}</th>
-              <th className="text-left px-4 py-2">{T.colDuration}</th>
-              <th className="text-left px-4 py-2">{T.colStatus}</th>
-              <th className="text-left px-4 py-2">{T.colCreated}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {results.map((r) => (
-              <tr
-                key={r.id}
-                onDoubleClick={() => setSelected(r)}
-                className="cv-row border-t border-white/5 hover:bg-white/[0.04] transition-colors duration-150 cursor-pointer"
-              >
-                <td className="px-4 py-2">
-                  {r.thumbnailUrl ? (
-                    <img src={r.thumbnailUrl} className="w-16 h-9 object-cover rounded-md" />
-                  ) : (
-                    <div className="w-16 h-9 bg-surface-800/60 rounded-md" />
-                  )}
-                </td>
-                <td className="px-4 py-2 font-mono">{r.barcode}</td>
-                <td className="px-4 py-2 text-slate-400">{r.station}</td>
-                <td className="px-4 py-2 text-slate-400">{r.camera}</td>
-                <td className="px-4 py-2 text-slate-400">{r.durationSeconds != null ? formatDuration(r.durationSeconds) : '-'}</td>
-                <td className="px-4 py-2">
-                  <StatusPill status={r.status} />
-                </td>
-                <td className="px-4 py-2 text-slate-500">{formatDateTime(r.createdDate)}</td>
-              </tr>
-            ))}
-            {results.length === 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-white/[0.03] text-slate-500 text-xs uppercase">
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-slate-600">
-                  {T.noResults}
-                </td>
+                <th className="text-left px-4 py-2">{T.colThumbnail}</th>
+                <th className="text-left px-4 py-2">{T.colBarcode}</th>
+                <th className="text-left px-4 py-2">{T.colStation}</th>
+                <th className="text-left px-4 py-2">{T.colCamera}</th>
+                <th className="text-left px-4 py-2">{T.colCreated}</th>
+                <th className="text-left px-4 py-2">{T.colDuration}</th>
+                <th className="text-left px-4 py-2">{T.colResolution}</th>
+                <th className="text-left px-4 py-2">{T.colFileSize}</th>
+                <th className="text-left px-4 py-2">{T.colStatus}</th>
+                <th className="text-left px-4 py-2">{T.colActions}</th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {results.map((r) => (
+                <tr
+                  key={r.id}
+                  onDoubleClick={() => setSelected(r)}
+                  className="cv-row border-t border-white/5 hover:bg-white/[0.04] transition-colors duration-150"
+                >
+                  <td className="px-4 py-2">
+                    {r.thumbnailUrl ? (
+                      <img src={r.thumbnailUrl} className="w-16 h-9 object-cover rounded-md" />
+                    ) : (
+                      <div className="w-16 h-9 bg-surface-800/60 rounded-md" />
+                    )}
+                  </td>
+                  <td className="px-4 py-2 font-mono">{r.barcode}</td>
+                  <td className="px-4 py-2 text-slate-400">{r.station}</td>
+                  <td className="px-4 py-2 text-slate-400">{r.camera}</td>
+                  <td className="px-4 py-2 text-slate-500">{formatDateTime(r.createdDate)}</td>
+                  <td className="px-4 py-2 text-slate-400">{r.durationSeconds != null ? formatDuration(r.durationSeconds) : '-'}</td>
+                  <td className="px-4 py-2 text-slate-400">{r.resolution}</td>
+                  <td className="px-4 py-2 text-slate-400">{formatBytes(r.fileSize)}</td>
+                  <td className="px-4 py-2">
+                    <StatusPill status={r.status} />
+                  </td>
+                  <td className="px-4 py-2">
+                    <div className="flex items-center gap-1.5">
+                      <AnimatedButton size="sm" onClick={() => setSelected(r)}>
+                        {T.actionPlay}
+                      </AnimatedButton>
+                      <AnimatedButton size="sm" onClick={() => window.electronAPI.recordings.openFolder(r.videoPath)}>
+                        {T.actionOpenFolder}
+                      </AnimatedButton>
+                      <AnimatedButton
+                        size="sm"
+                        variant="danger"
+                        disabled={r.status === 'recording' || deletingId === r.id}
+                        onClick={() => setPendingDelete(r)}
+                      >
+                        {deletingId === r.id ? T.deleting : T.actionDelete}
+                      </AnimatedButton>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {results.length === 0 && (
+                <tr>
+                  <td colSpan={10} className="px-4 py-8 text-center text-slate-600">
+                    {T.noResults}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </GlassPanel>
 
       <AnimatePresence>
         {selected && <VideoPlayerModal key="video-player" recording={selected} onClose={() => setSelected(null)} />}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {pendingDelete && (
+          <DeleteRecordingDialog
+            key="delete-recording"
+            recording={pendingDelete}
+            busy={deletingId === pendingDelete.id}
+            onConfirm={confirmDelete}
+            onCancel={() => setPendingDelete(null)}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {toast && (
+          <NotificationToast key="search-toast" tone={toast.tone} title={toast.message} onDismiss={() => setToast(null)} />
+        )}
       </AnimatePresence>
     </div>
   )
