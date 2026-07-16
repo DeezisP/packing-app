@@ -244,7 +244,22 @@ export const strings = {
 
     folderDoesNotExistTitle: 'ยังไม่มีโฟลเดอร์นี้',
     folderDoesNotExistBody: (path: string): string => `${path} ยังไม่มีอยู่ ต้องการสร้างหรือไม่?`,
-    createIt: 'ใช่ สร้างโฟลเดอร์นี้'
+    createIt: 'ใช่ สร้างโฟลเดอร์นี้',
+
+    sectionApiIntegration: 'การเชื่อมต่อ API คลังสินค้า',
+    apiIntegrationBody:
+      'ส่งข้อมูลบาร์โค้ดที่สแกนไปยังระบบคลังสินค้าภายนอกโดยอัตโนมัติผ่านคิวสำรอง - หากเชื่อมต่อไม่ได้ชั่วคราว ระบบจะลองส่งใหม่โดยอัตโนมัติในภายหลังโดยไม่กระทบการบันทึกวิดีโอ',
+    apiEnable: 'เปิดใช้งาน',
+    apiBaseUrl: 'URL ของ API',
+    apiKey: 'API Key',
+    apiKeyPlaceholder: 'วาง API Key ที่นี่',
+    apiKeyShow: 'แสดง',
+    apiKeyHide: 'ซ่อน',
+    apiScannerUser: 'ชื่อผู้ใช้สแกนเนอร์ (scannerUser)',
+    apiScannerUserPlaceholder: 'เช่น somchai',
+    apiQueuePending: (n: number): string => `รอส่งในคิว: ${n} รายการ`,
+    apiQueueLastError: (err: string): string => `ข้อผิดพลาดล่าสุด: ${err}`,
+    apiQueueLastSuccess: (t: string): string => `ส่งสำเร็จล่าสุด: ${t}`
   },
 
   devicePairing: {

@@ -170,9 +170,15 @@
     transform: translateY(-1px);
   }
 
-  /* Cheap, dependency-free virtualization for potentially long lists (search
-     results): off-screen rows skip layout/paint entirely until scrolled
-     near, without needing a windowing library. */
+  /* Cheap, dependency-free virtualization for potentially long lists: off-
+     screen rows skip layout/paint entirely until scrolled near, without
+     needing a windowing library. CAUTION: contain-intrinsic-size must track
+     the row's real rendered height reasonably closely - a row that grows
+     well past this estimate (e.g. a multi-button action toolbar added to a
+     previously plain-text row) can end up with clicks silently not
+     registering on it in Chromium. Not currently applied to the History
+     table rows for exactly this reason - re-add only with a size estimate
+     verified against the actual row height. */
   .cv-row {
     content-visibility: auto;
     contain-intrinsic-size: 0 44px;

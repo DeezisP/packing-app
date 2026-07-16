@@ -4,7 +4,7 @@ import initSqlJs, { type Database as SqlJsDatabase } from 'sql.js'
 import { defaultPaths } from './PathService'
 import { logger } from './Logger'
 import { toMediaUrl } from './MediaProtocol'
-import type { RecordingRecord, RecordingStatus, SearchFilters } from '@shared/types'
+import type { RecordingRecord, RecordingStatus, SearchFilters, ApiQueueStatus } from '@shared/types'
 
 // sql.js is a pure WebAssembly build of SQLite - it needs zero native
 // compilation (no node-gyp/Visual Studio/Python required at npm install
@@ -34,6 +34,23 @@ CREATE INDEX IF NOT EXISTS idx_recordings_station ON recordings (station);
 CREATE INDEX IF NOT EXISTS idx_recordings_camera ON recordings (camera);
 CREATE INDEX IF NOT EXISTS idx_recordings_created_date ON recordings (created_date);
 CREATE INDEX IF NOT EXISTS idx_recordings_status ON recordings (status);
+
+-- Durable outbox for the external warehouse API (see ApiQueueService) - a
+-- row is only ever deleted once its POST has actually succeeded, so a scan
+-- can never be silently lost to a network hiccup or the app being closed
+-- before the queue drains, and survives a restart since it's flushed to
+-- disk the same way recordings are.
+CREATE TABLE IF NOT EXISTS api_queue (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind            TEXT NOT NULL CHECK (kind IN ('scan', 'confirm')),
+  order_number    TEXT NOT NULL,
+  scanner_device  TEXT NOT NULL,
+  scanner_user    TEXT NOT NULL,
+  created_date    TEXT NOT NULL,
+  attempts        INTEGER NOT NULL DEFAULT 0,
+  last_error      TEXT,
+  last_attempt_at TEXT
+);
 `
 
 const FLUSH_INTERVAL_MS = 3000
@@ -54,6 +71,24 @@ interface RecordingRow {
   status: RecordingStatus
   created_date: string
   last_viewed: string | null
+}
+
+interface ApiQueueRow {
+  id: number
+  kind: 'scan' | 'confirm'
+  order_number: string
+  scanner_device: string
+  scanner_user: string
+  attempts: number
+}
+
+export interface ApiQueueItem {
+  id: number
+  kind: 'scan' | 'confirm'
+  orderNumber: string
+  scannerDevice: string
+  scannerUser: string
+  attempts: number
 }
 
 /** Reads the current file size straight off disk rather than trusting a
@@ -95,6 +130,10 @@ class DatabaseService {
   private db!: SqlJsDatabase
   private dirty = false
   private flushTimer: NodeJS.Timeout | null = null
+  /** Not persisted (in-memory only, reset on restart) - a successful sync
+   *  moment isn't something operators need to survive a restart to see,
+   *  unlike the pending queue itself. */
+  private lastApiScanSuccessAt: string | null = null
 
   async init(): Promise<void> {
     const wasmDir = path.dirname(require.resolve('sql.js/dist/sql-wasm.js'))
@@ -272,6 +311,59 @@ class DatabaseService {
   markViewed(id: number): void {
     this.run(`UPDATE recordings SET last_viewed = ? WHERE id = ?`, [new Date().toISOString(), id])
     this.flush()
+  }
+
+  enqueueApiScan(input: { kind: 'scan' | 'confirm'; orderNumber: string; scannerDevice: string; scannerUser: string }): number {
+    this.run(
+      `INSERT INTO api_queue (kind, order_number, scanner_device, scanner_user, created_date) VALUES (?, ?, ?, ?, ?)`,
+      [input.kind, input.orderNumber, input.scannerDevice, input.scannerUser, new Date().toISOString()]
+    )
+    const row = this.queryOne<{ id: number }>('SELECT last_insert_rowid() as id')
+    this.flush()
+    return row?.id ?? -1
+  }
+
+  getPendingApiScans(limit: number): ApiQueueItem[] {
+    return this.queryAll<ApiQueueRow>(`SELECT * FROM api_queue ORDER BY id ASC LIMIT ?`, [limit]).map((row) => ({
+      id: row.id,
+      kind: row.kind,
+      orderNumber: row.order_number,
+      scannerDevice: row.scanner_device,
+      scannerUser: row.scanner_user,
+      attempts: row.attempts
+    }))
+  }
+
+  /** A successful POST removes the row entirely - the queue only ever holds
+   *  what's still outstanding. */
+  markApiScanSent(id: number): void {
+    this.run(`DELETE FROM api_queue WHERE id = ?`, [id])
+    this.flush()
+  }
+
+  markApiScanFailed(id: number, error: string): void {
+    this.run(`UPDATE api_queue SET attempts = attempts + 1, last_error = ?, last_attempt_at = ? WHERE id = ?`, [
+      error,
+      new Date().toISOString(),
+      id
+    ])
+    this.flush()
+  }
+
+  getApiQueueStatus(): ApiQueueStatus {
+    const pendingRow = this.queryOne<{ c: number }>(`SELECT COUNT(*) as c FROM api_queue`)
+    const lastErrorRow = this.queryOne<{ last_error: string | null }>(
+      `SELECT last_error FROM api_queue WHERE last_error IS NOT NULL ORDER BY last_attempt_at DESC LIMIT 1`
+    )
+    return {
+      pending: pendingRow?.c ?? 0,
+      lastError: lastErrorRow?.last_error ?? null,
+      lastSuccessAt: this.lastApiScanSuccessAt
+    }
+  }
+
+  noteApiScanSuccess(): void {
+    this.lastApiScanSuccessAt = new Date().toISOString()
   }
 
   backup(destinationPath: string): void {

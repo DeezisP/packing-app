@@ -62,7 +62,10 @@ export const IPC = {
   updateDownload: 'update:download',
   updateInstall: 'update:install',
   updateGetState: 'update:getState',
-  updateOnStateChanged: 'update:onStateChanged'
+  updateOnStateChanged: 'update:onStateChanged',
+
+  // External warehouse API scan queue
+  apiQueueGetStatus: 'apiQueue:getStatus'
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]

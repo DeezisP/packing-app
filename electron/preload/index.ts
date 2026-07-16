@@ -17,7 +17,8 @@ import type {
   DiagnosticsTestResult,
   StationValidationIssue,
   DeleteRecordingResult,
-  CameraCapabilityOption
+  CameraCapabilityOption,
+  ApiQueueStatus
 } from '@shared/types'
 
 const api = {
@@ -168,6 +169,9 @@ const api = {
         ipcRenderer.removeListener(IPC.updateOnStateChanged, listener)
       }
     }
+  },
+  apiQueue: {
+    getStatus: (): Promise<ApiQueueStatus> => ipcRenderer.invoke(IPC.apiQueueGetStatus)
   }
 }
 

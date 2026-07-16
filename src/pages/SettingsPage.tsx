@@ -12,7 +12,7 @@ import { DiagnosticsPanel } from '../components/settings/DiagnosticsPanel'
 import { useUpdateState } from '../hooks/useUpdateState'
 import { useCameraDevices } from '../hooks/useCameraDevices'
 import { useCameraCapabilities } from '../hooks/useCameraCapabilities'
-import { formatBytes } from '../lib/format'
+import { formatBytes, formatDateTime } from '../lib/format'
 import { strings } from '../lib/strings'
 import type {
   AppConfig,
@@ -21,7 +21,9 @@ import type {
   ThemeMode,
   SaveLocationStatus,
   OverlayConfig,
-  QualityPresetId
+  QualityPresetId,
+  ApiIntegrationConfig,
+  ApiQueueStatus
 } from '../../electron/shared/types'
 
 interface Props {
@@ -444,6 +446,11 @@ export function SettingsPage({ config, onConfigChanged }: Props): JSX.Element {
         </div>
       </Section>
 
+      <ApiIntegrationSection
+        config={draft.apiIntegration}
+        onChange={(partial) => persist({ ...draft, apiIntegration: { ...draft.apiIntegration, ...partial } })}
+      />
+
       <AnimatePresence>
         {testCamera && (
           <TestCameraModal
@@ -455,6 +462,85 @@ export function SettingsPage({ config, onConfigChanged }: Props): JSX.Element {
         )}
       </AnimatePresence>
     </div>
+  )
+}
+
+function ApiIntegrationSection({
+  config,
+  onChange
+}: {
+  config: ApiIntegrationConfig
+  onChange: (partial: Partial<ApiIntegrationConfig>) => void
+}): JSX.Element {
+  const [showKey, setShowKey] = useState(false)
+  const [status, setStatus] = useState<ApiQueueStatus | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    async function refresh(): Promise<void> {
+      const s = await window.electronAPI.apiQueue.getStatus()
+      if (!cancelled) setStatus(s)
+    }
+    refresh()
+    const timer = window.setInterval(refresh, 5000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [])
+
+  return (
+    <Section title={T.sectionApiIntegration}>
+      <p className="text-sm text-slate-400">{T.apiIntegrationBody}</p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+        <Field label={T.apiEnable}>
+          <Toggle checked={config.enabled} onChange={(v) => onChange({ enabled: v })} />
+        </Field>
+        <Field label={T.apiScannerUser}>
+          <input
+            value={config.scannerUser}
+            onChange={(e) => onChange({ scannerUser: e.target.value })}
+            placeholder={T.apiScannerUserPlaceholder}
+            className="w-full bg-surface-800/60 border border-white/10 rounded-lg px-3 py-2 text-sm"
+          />
+        </Field>
+        <div className="md:col-span-2">
+          <Field label={T.apiBaseUrl}>
+            <input
+              value={config.baseUrl}
+              onChange={(e) => onChange({ baseUrl: e.target.value })}
+              className="w-full bg-surface-800/60 border border-white/10 rounded-lg px-3 py-2 text-sm font-mono"
+            />
+          </Field>
+        </div>
+        <div className="md:col-span-2">
+          <Field label={T.apiKey}>
+            <div className="flex gap-2">
+              <input
+                type={showKey ? 'text' : 'password'}
+                value={config.apiKey}
+                onChange={(e) => onChange({ apiKey: e.target.value })}
+                placeholder={T.apiKeyPlaceholder}
+                className="flex-1 bg-surface-800/60 border border-white/10 rounded-lg px-3 py-2 text-sm font-mono"
+                autoComplete="off"
+              />
+              <AnimatedButton size="sm" onClick={() => setShowKey((v) => !v)}>
+                {showKey ? T.apiKeyHide : T.apiKeyShow}
+              </AnimatedButton>
+            </div>
+          </Field>
+        </div>
+      </div>
+      {status && (config.enabled || status.pending > 0) && (
+        <div className="mt-4 text-xs text-slate-500 flex items-center gap-4 flex-wrap">
+          <span>{T.apiQueuePending(status.pending)}</span>
+          {status.lastError && <span className="text-warn-500">{T.apiQueueLastError(status.lastError)}</span>}
+          {status.lastSuccessAt && (
+            <span className="text-ok-500">{T.apiQueueLastSuccess(formatDateTime(status.lastSuccessAt))}</span>
+          )}
+        </div>
+      )}
+    </Section>
   )
 }
 

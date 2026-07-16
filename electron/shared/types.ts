@@ -246,6 +246,21 @@ export interface OverlayConfig {
   backgroundOpacity: number
 }
 
+/** Reports every barcode scan to an external warehouse system - see
+ *  ApiQueueService. `apiKey` is a live credential; it lives only in the
+ *  per-machine config.json (gitignored, never the shipped
+ *  config.default.json template), the same way saveLocation and every other
+ *  machine-specific setting already does. */
+export interface ApiIntegrationConfig {
+  enabled: boolean
+  baseUrl: string
+  apiKey: string
+  /** Sent as `scannerUser` on every request - this app has no per-operator
+   *  login, so it's one config-wide value rather than a real per-scan
+   *  identity. */
+  scannerUser: string
+}
+
 export interface AppConfig {
   saveLocation: string
   theme: ThemeMode
@@ -256,6 +271,7 @@ export interface AppConfig {
   activeStationId: string
   identifiedScanners: IdentifiedScanner[]
   overlay: OverlayConfig
+  apiIntegration: ApiIntegrationConfig
 }
 
 /** The values available to plug into an overlay line - some are static per
@@ -481,4 +497,12 @@ export interface DiagnosticsTestResult {
 export interface DeleteRecordingResult {
   success: boolean
   error: string | null
+}
+
+/** Snapshot of the external-API scan queue's health, for the Settings page -
+ *  see ApiQueueService/Database's api_queue table. */
+export interface ApiQueueStatus {
+  pending: number
+  lastError: string | null
+  lastSuccessAt: string | null
 }

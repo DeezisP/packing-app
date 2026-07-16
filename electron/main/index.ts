@@ -13,6 +13,7 @@ import { rawInputService } from './services/RawInputService'
 import { stationManager } from './services/StationManager'
 import { recordingEngine } from './services/RecordingEngine'
 import { updateService } from './services/UpdateService'
+import { apiQueueService } from './services/ApiQueueService'
 
 const AUTO_UPDATE_CHECK_DELAY_MS = 8000
 
@@ -47,6 +48,7 @@ if (!singleInstanceLock) {
     stationManager.init()
     cameraManager.startPolling()
     scannerManager.startPolling()
+    apiQueueService.start()
     registerMediaProtocol()
     registerIpcHandlers()
 
@@ -83,6 +85,7 @@ if (!singleInstanceLock) {
     logger.info('Application shutting down')
     stationManager.shutdown()
     recordingEngine.killAll()
+    apiQueueService.stop()
     database.close()
   })
 

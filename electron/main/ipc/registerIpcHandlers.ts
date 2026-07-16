@@ -10,6 +10,7 @@ import { rawInputService } from '../services/RawInputService'
 import { stationManager } from '../services/StationManager'
 import { recordingEngine } from '../services/RecordingEngine'
 import { updateService } from '../services/UpdateService'
+import { apiQueueService } from '../services/ApiQueueService'
 import { logger } from '../services/Logger'
 import { getDiskUsage } from '../services/DiskMonitor'
 import { validateSaveLocation, createSaveLocationFolder } from '../services/SaveLocationValidator'
@@ -218,6 +219,8 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.updateDownload, () => updateService.download())
   ipcMain.handle(IPC.updateInstall, () => updateService.quitAndInstall())
   ipcMain.handle(IPC.updateGetState, () => updateService.getState())
+
+  ipcMain.handle(IPC.apiQueueGetStatus, () => apiQueueService.getStatus())
 
   // Forward internal service events to every renderer window.
   stationManager.on('stateChanged', (state) => broadcast(IPC.stationOnStateChanged, state))

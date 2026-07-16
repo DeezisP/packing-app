@@ -144,7 +144,7 @@ export function SearchPage({ config }: Props): JSX.Element {
                 <tr
                   key={r.id}
                   onDoubleClick={() => setSelected(r)}
-                  className="cv-row border-t border-white/5 hover:bg-white/[0.04] transition-colors duration-150"
+                  className="border-t border-white/5 hover:bg-white/[0.04] transition-colors duration-150 cursor-pointer"
                 >
                   <td className="px-4 py-2">
                     <Thumbnail url={r.thumbnailUrl} />

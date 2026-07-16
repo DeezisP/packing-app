@@ -7,6 +7,7 @@ import { recordingEngine } from './RecordingEngine'
 import { cameraManager } from './CameraManager'
 import { scannerManager } from './ScannerManager'
 import { overlayService } from './OverlayService'
+import { apiQueueService } from './ApiQueueService'
 import { writeRecordingMetadata } from './MetadataService'
 import { getDiskUsage, CRITICAL_DISK_STOP_BYTES } from './DiskMonitor'
 import { validateSaveLocation } from './SaveLocationValidator'
@@ -483,6 +484,7 @@ class StationManager extends EventEmitter {
         activeCameraId: camera.id
       })
       logger.info('Recording started', { stationId, barcode, camera: cameraDisplayName, cameraId: camera.id, success: true })
+      apiQueueService.enqueue('scan', barcode, resolveScannerDisplay(station).name ?? station.name)
     } catch (err) {
       overlayService.stop(stationId)
       cameraManager.releaseFromRecording(camera.id, stationId)
@@ -513,6 +515,12 @@ class StationManager extends EventEmitter {
     this.writeMetadataFor(stationId, state)
 
     logger.info('Recording stopped', { stationId, barcode: state.barcode })
+
+    if (state.barcode) {
+      const station = this.getStationConfig(stationId)
+      const scannerDevice = (station ? resolveScannerDisplay(station).name : null) ?? station?.name ?? stationId
+      apiQueueService.enqueue('confirm', state.barcode, scannerDevice)
+    }
 
     this.setState(stationId, {
       status: 'idle',
