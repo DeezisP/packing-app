@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { QUALITY_PRESETS, DEFAULT_QUALITY_PRESET_ID, buildCameraDisplayNames, isPresetSupported } from '../../electron/shared/types'
+import {
+  QUALITY_PRESETS,
+  DEFAULT_QUALITY_PRESET_ID,
+  buildCameraDisplayNames,
+  isPresetSupported,
+  API_KEY_PLACEHOLDER
+} from '../../electron/shared/types'
 import { UpdatePanel } from '../components/common/UpdatePanel'
 import { OverlayPreview } from '../components/common/OverlayPreview'
 import { GlassPanel } from '../components/common/GlassPanel'
@@ -22,7 +28,7 @@ import type {
   SaveLocationStatus,
   OverlayConfig,
   QualityPresetId,
-  ApiIntegrationConfig,
+  WarehouseApiConfig,
   ApiQueueStatus
 } from '../../electron/shared/types'
 
@@ -446,9 +452,9 @@ export function SettingsPage({ config, onConfigChanged }: Props): JSX.Element {
         </div>
       </Section>
 
-      <ApiIntegrationSection
-        config={draft.apiIntegration}
-        onChange={(partial) => persist({ ...draft, apiIntegration: { ...draft.apiIntegration, ...partial } })}
+      <WarehouseApiSection
+        config={draft.warehouseApi}
+        onChange={(partial) => persist({ ...draft, warehouseApi: { ...draft.warehouseApi, ...partial } })}
       />
 
       <AnimatePresence>
@@ -465,15 +471,16 @@ export function SettingsPage({ config, onConfigChanged }: Props): JSX.Element {
   )
 }
 
-function ApiIntegrationSection({
+function WarehouseApiSection({
   config,
   onChange
 }: {
-  config: ApiIntegrationConfig
-  onChange: (partial: Partial<ApiIntegrationConfig>) => void
+  config: WarehouseApiConfig
+  onChange: (partial: Partial<WarehouseApiConfig>) => void
 }): JSX.Element {
   const [showKey, setShowKey] = useState(false)
   const [status, setStatus] = useState<ApiQueueStatus | null>(null)
+  const keyAlreadyConfigured = config.apiKey === API_KEY_PLACEHOLDER
 
   useEffect(() => {
     let cancelled = false
@@ -482,10 +489,12 @@ function ApiIntegrationSection({
       if (!cancelled) setStatus(s)
     }
     refresh()
-    const timer = window.setInterval(refresh, 5000)
+    const off = window.electronAPI.apiQueue.onStatusChanged((s) => {
+      if (!cancelled) setStatus(s)
+    })
     return () => {
       cancelled = true
-      window.clearInterval(timer)
+      off()
     }
   }, [])
 
@@ -519,6 +528,13 @@ function ApiIntegrationSection({
               <input
                 type={showKey ? 'text' : 'password'}
                 value={config.apiKey}
+                onFocus={() => {
+                  // The field holds the placeholder, not the real stored key
+                  // (see registerIpcHandlers) - clear it on focus so typing
+                  // starts a genuinely new value instead of appending to
+                  // placeholder dots.
+                  if (keyAlreadyConfigured) onChange({ apiKey: '' })
+                }}
                 onChange={(e) => onChange({ apiKey: e.target.value })}
                 placeholder={T.apiKeyPlaceholder}
                 className="flex-1 bg-surface-800/60 border border-white/10 rounded-lg px-3 py-2 text-sm font-mono"
@@ -528,8 +544,20 @@ function ApiIntegrationSection({
                 {showKey ? T.apiKeyHide : T.apiKeyShow}
               </AnimatedButton>
             </div>
+            {keyAlreadyConfigured && <p className="text-xs text-slate-500 mt-1">{T.apiKeyAlreadySet}</p>}
           </Field>
         </div>
+        <Field label={T.apiTimeout}>
+          <input
+            type="number"
+            min={1000}
+            max={60000}
+            step={500}
+            value={config.timeout}
+            onChange={(e) => onChange({ timeout: Number(e.target.value) })}
+            className="w-full bg-surface-800/60 border border-white/10 rounded-lg px-3 py-2 text-sm"
+          />
+        </Field>
       </div>
       {status && (config.enabled || status.pending > 0) && (
         <div className="mt-4 text-xs text-slate-500 flex items-center gap-4 flex-wrap">

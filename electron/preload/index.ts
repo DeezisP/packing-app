@@ -93,8 +93,6 @@ const api = {
     getCapabilities: (cameraId: string): Promise<CameraCapabilityOption[]> =>
       ipcRenderer.invoke(IPC.camerasGetCapabilities, cameraId),
     getOwner: (cameraId: string): Promise<'preview' | 'ffmpeg' | null> => ipcRenderer.invoke(IPC.camerasGetOwner, cameraId),
-    getPreviewFrameUrl: (stationId: string): Promise<string> =>
-      ipcRenderer.invoke(IPC.camerasGetPreviewFrameUrl, stationId),
     reportPreviewOwnership: (cameraId: string, stationId: string, active: boolean): Promise<void> =>
       ipcRenderer.invoke(IPC.cameraReportPreviewOwnership, cameraId, stationId, active),
     onReleaseForRecording: (cb: (payload: { cameraId: string; stationId: string }) => void) => {
@@ -171,7 +169,14 @@ const api = {
     }
   },
   apiQueue: {
-    getStatus: (): Promise<ApiQueueStatus> => ipcRenderer.invoke(IPC.apiQueueGetStatus)
+    getStatus: (): Promise<ApiQueueStatus> => ipcRenderer.invoke(IPC.apiQueueGetStatus),
+    onStatusChanged: (cb: (status: ApiQueueStatus) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, status: ApiQueueStatus): void => cb(status)
+      ipcRenderer.on(IPC.apiQueueOnStatusChanged, listener)
+      return (): void => {
+        ipcRenderer.removeListener(IPC.apiQueueOnStatusChanged, listener)
+      }
+    }
   }
 }
 

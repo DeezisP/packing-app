@@ -28,7 +28,6 @@ export const IPC = {
   cameraOnListChanged: 'cameras:onListChanged',
   camerasGetCapabilities: 'cameras:getCapabilities',
   camerasGetOwner: 'cameras:getOwner',
-  camerasGetPreviewFrameUrl: 'cameras:getPreviewFrameUrl',
   cameraReportPreviewOwnership: 'cameras:reportPreviewOwnership',
   cameraOnReleaseForRecording: 'cameras:onReleaseForRecording',
   cameraOnReacquireAfterRecording: 'cameras:onReacquireAfterRecording',
@@ -65,7 +64,8 @@ export const IPC = {
   updateOnStateChanged: 'update:onStateChanged',
 
   // External warehouse API scan queue
-  apiQueueGetStatus: 'apiQueue:getStatus'
+  apiQueueGetStatus: 'apiQueue:getStatus',
+  apiQueueOnStatusChanged: 'apiQueue:onStatusChanged'
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]

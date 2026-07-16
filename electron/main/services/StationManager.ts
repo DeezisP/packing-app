@@ -384,6 +384,13 @@ class StationManager extends EventEmitter {
     barcode: string,
     saveLocation: string
   ): Promise<void> {
+    logger.info('Recording start: requested', {
+      stationId,
+      station: station.name,
+      barcode,
+      scanner: resolveScannerDisplay(station).name
+    })
+
     if (!station.cameraId && !station.cameraName) {
       this.setState(stationId, { status: 'error', lastError: 'No camera assigned to this station' })
       logger.error('Cannot start recording: no camera assigned', { stationId })
@@ -484,7 +491,7 @@ class StationManager extends EventEmitter {
         activeCameraId: camera.id
       })
       logger.info('Recording started', { stationId, barcode, camera: cameraDisplayName, cameraId: camera.id, success: true })
-      apiQueueService.enqueue('scan', barcode, resolveScannerDisplay(station).name ?? station.name)
+      apiQueueService.enqueue('scan', barcode, resolveScannerDisplay(station).name ?? station.name, station.name)
     } catch (err) {
       overlayService.stop(stationId)
       cameraManager.releaseFromRecording(camera.id, stationId)
@@ -499,11 +506,50 @@ class StationManager extends EventEmitter {
     if (!state) return
 
     overlayService.stop(stationId)
+    logger.info('Recording stop: requested', { stationId, barcode: state.barcode, videoPath: state.videoPath })
     await recordingEngine.stop(stationId)
     // Only now - after ffmpeg has actually exited, not merely been asked to
     // stop - is the camera genuinely free. Releasing any earlier would let
     // the preview race a still-shutting-down ffmpeg process for the device.
     if (state.activeCameraId) cameraManager.releaseFromRecording(state.activeCameraId, stationId)
+
+    // The file on disk isn't trustworthy just because ffmpeg's process
+    // exited - a force-killed process (see RecordingEngine.stop's SIGKILL
+    // fallback) can leave a non-empty but undecodable file with no moov
+    // atom. Actually decode it before treating the recording as real, so a
+    // broken file is caught here rather than the next time someone tries to
+    // press Play.
+    const verification = state.videoPath ? await recordingEngine.verifyRecording(state.videoPath) : null
+    logger.info('File finalization: recording verified', {
+      stationId,
+      barcode: state.barcode,
+      videoPath: state.videoPath,
+      valid: verification?.valid ?? false,
+      sizeBytes: verification?.sizeBytes ?? 0,
+      durationSeconds: verification?.durationSeconds ?? null
+    })
+
+    if (verification && !verification.valid) {
+      if (state.dbId) database.markError(state.dbId, verification.error ?? 'ไฟล์วิดีโอเสียหาย')
+      this.writeMetadataFor(stationId, state)
+      logger.error('Recording stop: file failed verification, not marked as completed', {
+        stationId,
+        barcode: state.barcode,
+        videoPath: state.videoPath,
+        error: verification.error
+      })
+      this.setState(stationId, {
+        status: 'error',
+        lastError: verification.error ?? 'ไฟล์วิดีโอเสียหายหรือไม่สามารถเล่นได้',
+        barcode: null,
+        startedAt: null,
+        elapsedSeconds: 0,
+        dbId: null,
+        videoPath: null,
+        activeCameraId: null
+      })
+      return
+    }
 
     let thumbnailPath: string | null = null
     if (state.videoPath) {
@@ -519,7 +565,7 @@ class StationManager extends EventEmitter {
     if (state.barcode) {
       const station = this.getStationConfig(stationId)
       const scannerDevice = (station ? resolveScannerDisplay(station).name : null) ?? station?.name ?? stationId
-      apiQueueService.enqueue('confirm', state.barcode, scannerDevice)
+      apiQueueService.enqueue('confirm', state.barcode, scannerDevice, station?.name ?? stationId)
     }
 
     this.setState(stationId, {

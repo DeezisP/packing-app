@@ -39,7 +39,9 @@ export const strings = {
     subtitle: (n: number): string =>
       `รอสแกนบาร์โค้ด... สแกนเนอร์ที่จับคู่แล้วจะส่งไปยังสถานีโดยอัตโนมัติ ส่วนสแกนเนอร์ที่ยังไม่ได้จับคู่จะใช้สถานีที่กำลังใช้งานอยู่ กด 1-${n} เพื่อสลับสถานี`,
     updateAvailable: (v: string): string => `มีอัปเดตใหม่ - v${v}`,
-    noEnabledStations: 'ยังไม่มีสถานีที่เปิดใช้งาน ไปที่ ตั้งค่า > สถานีแพ็คสินค้า เพื่อเพิ่มหรือเปิดใช้งานสถานี'
+    noEnabledStations: 'ยังไม่มีสถานีที่เปิดใช้งาน ไปที่ ตั้งค่า > สถานีแพ็คสินค้า เพื่อเพิ่มหรือเปิดใช้งานสถานี',
+    warehouseApiUnavailable: 'ระบบ API คลังสินค้าไม่พร้อมใช้งาน',
+    warehouseApiUnavailableBody: 'การบันทึกวิดีโอยังคงทำงานตามปกติ ระบบจะลองส่งข้อมูลใหม่โดยอัตโนมัติ'
   },
 
   stationCard: {
@@ -100,7 +102,7 @@ export const strings = {
 
   camera: {
     previewUnavailable: (err: string): string => `พรีวิวใช้งานไม่ได้: ${err}`,
-    previewStartingForRecording: 'กำลังเริ่มบันทึก...'
+    previewPausedForRecording: 'กำลังบันทึกวิดีโอ - พรีวิวจะกลับมาอีกครั้งเมื่อหยุดบันทึก'
   },
 
   videoPlayer: {
@@ -255,8 +257,10 @@ export const strings = {
     apiKeyPlaceholder: 'วาง API Key ที่นี่',
     apiKeyShow: 'แสดง',
     apiKeyHide: 'ซ่อน',
+    apiKeyAlreadySet: 'มีการตั้งค่า API Key ไว้แล้ว - พิมพ์ค่าใหม่เพื่อเปลี่ยน',
     apiScannerUser: 'ชื่อผู้ใช้สแกนเนอร์ (scannerUser)',
     apiScannerUserPlaceholder: 'เช่น somchai',
+    apiTimeout: 'ระยะเวลารอสูงสุด (มิลลิวินาที)',
     apiQueuePending: (n: number): string => `รอส่งในคิว: ${n} รายการ`,
     apiQueueLastError: (err: string): string => `ข้อผิดพลาดล่าสุด: ${err}`,
     apiQueueLastSuccess: (t: string): string => `ส่งสำเร็จล่าสุด: ${t}`

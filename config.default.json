@@ -6,11 +6,12 @@
   "dbBackupIntervalHours": 24,
   "activeStationId": "station-a",
   "identifiedScanners": [],
-  "apiIntegration": {
+  "warehouseApi": {
     "enabled": false,
     "baseUrl": "https://www.perfectelt.com/perfect/v1/warehouse/mobile",
     "apiKey": "",
-    "scannerUser": ""
+    "scannerUser": "",
+    "timeout": 10000
   },
   "overlay": {
     "enabled": true,

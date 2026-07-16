@@ -14,10 +14,10 @@ import { apiQueueService } from '../services/ApiQueueService'
 import { logger } from '../services/Logger'
 import { getDiskUsage } from '../services/DiskMonitor'
 import { validateSaveLocation, createSaveLocationFolder } from '../services/SaveLocationValidator'
-import { defaultPaths, resolveSaveLocation, previewFramePath } from '../services/PathService'
+import { defaultPaths, resolveSaveLocation } from '../services/PathService'
 import { resolveFfmpegPath } from '../services/FfmpegLocator'
 import { listWindowsCameras } from '../services/WindowsDeviceService'
-import { toMediaUrl } from '../services/MediaProtocol'
+import { API_KEY_PLACEHOLDER } from '@shared/types'
 import type { AppConfig, SearchFilters, DiagnosticsStationAssignment, LogEntry } from '@shared/types'
 
 function broadcast(channel: string, payload: unknown): void {
@@ -26,10 +26,40 @@ function broadcast(channel: string, payload: unknown): void {
   }
 }
 
-export function registerIpcHandlers(): void {
-  ipcMain.handle(IPC.configGet, () => configManager.get())
+/** The warehouse API key never leaves the main process in plaintext -
+ *  the renderer only ever sees API_KEY_PLACEHOLDER once a real key is
+ *  stored, never the key itself, even though the Settings page reads config
+ *  through the same generic config:get/config:update channel every other
+ *  setting uses. See resolveIncomingConfigUpdate for the other half of this:
+ *  telling "the user left the placeholder alone" apart from "the user typed
+ *  a new key" on the way back in. */
+function sanitizeConfigForRenderer(config: AppConfig): AppConfig {
+  return {
+    ...config,
+    warehouseApi: {
+      ...config.warehouseApi,
+      apiKey: config.warehouseApi.apiKey ? API_KEY_PLACEHOLDER : ''
+    }
+  }
+}
 
-  ipcMain.handle(IPC.configUpdate, (_e, partial: Partial<AppConfig>) => configManager.update(partial))
+/** Undoes the placeholder substitution for an incoming config:update call -
+ *  if the renderer echoed the placeholder back unchanged (it never had the
+ *  real key to send), keep whatever key is already stored instead of
+ *  overwriting it with the literal placeholder text. */
+function resolveIncomingConfigUpdate(partial: Partial<AppConfig>): Partial<AppConfig> {
+  if (!partial.warehouseApi) return partial
+  const incomingKey = partial.warehouseApi.apiKey
+  const realKey = incomingKey === API_KEY_PLACEHOLDER ? configManager.get().warehouseApi.apiKey : incomingKey
+  return { ...partial, warehouseApi: { ...partial.warehouseApi, apiKey: realKey } }
+}
+
+export function registerIpcHandlers(): void {
+  ipcMain.handle(IPC.configGet, () => sanitizeConfigForRenderer(configManager.get()))
+
+  ipcMain.handle(IPC.configUpdate, (_e, partial: Partial<AppConfig>) =>
+    sanitizeConfigForRenderer(configManager.update(resolveIncomingConfigUpdate(partial)))
+  )
 
   ipcMain.handle(IPC.configPickFolder, async () => {
     const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
@@ -56,7 +86,7 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC.configResetSaveLocation, () => {
-    return configManager.update({ saveLocation: configManager.getDefaultSaveLocation() })
+    return sanitizeConfigForRenderer(configManager.update({ saveLocation: configManager.getDefaultSaveLocation() }))
   })
 
   ipcMain.handle(IPC.configGetSaveLocationStatus, () => stationManager.getSaveLocationStatus())
@@ -85,8 +115,6 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.camerasGetCapabilities, (_e, cameraId: string) => cameraManager.getCapabilities(cameraId))
 
   ipcMain.handle(IPC.camerasGetOwner, (_e, cameraId: string) => cameraManager.getOwner(cameraId))
-
-  ipcMain.handle(IPC.camerasGetPreviewFrameUrl, (_e, stationId: string) => toMediaUrl(previewFramePath(stationId)))
 
   ipcMain.handle(IPC.cameraReportPreviewOwnership, (_e, cameraId: string, stationId: string, active: boolean) =>
     cameraManager.reportPreviewOwnership(cameraId, stationId, active)
@@ -235,4 +263,5 @@ export function registerIpcHandlers(): void {
   rawInputService.on('keydown', (payload) => broadcast(IPC.scannersOnRawKeydown, payload))
   logger.on('entry', (entry) => broadcast(IPC.systemOnLogEntry, entry))
   updateService.on('stateChanged', (state) => broadcast(IPC.updateOnStateChanged, state))
+  apiQueueService.on('queueChanged', () => broadcast(IPC.apiQueueOnStatusChanged, apiQueueService.getStatus()))
 }

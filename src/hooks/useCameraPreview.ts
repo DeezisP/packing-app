@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { CameraDevice } from '../../electron/shared/types'
 
-const PREVIEW_FRAME_POLL_MS = 180
-
 /** Chromium redacts every device's `label` (and gives every device the same
  *  unstable placeholder `deviceId`) in `enumerateDevices()` until the current
  *  page has completed at least one actually-granted `getUserMedia()` call -
@@ -87,23 +85,16 @@ export function useCameraPreview(
    *  recording is using it - distinct from `error`, since this isn't a
    *  failure, just the ffmpeg/recording handoff (see CameraManager's
    *  ownership doc comment). getUserMedia resumes automatically the moment
-   *  recording releases the camera back; in the meantime `previewFrameUrl`
-   *  below is what keeps the picture alive. */
+   *  recording releases the camera back. A live (dual-output ffmpeg) preview
+   *  during this window was tried and reverted after it caused the
+   *  recording process to occasionally hang on shutdown and produce
+   *  unplayable files - see RecordingEngine.buildRecordArgs. The dashboard
+   *  shows a plain "recording in progress" placeholder for now instead. */
   releasedForRecording: boolean
-  /** A blob: URL for the most recently fetched live-preview frame ffmpeg is
-   *  writing as a second output off the SAME capture session it's recording
-   *  from (see RecordingEngine) - only meaningful while
-   *  `releasedForRecording` is true. Updates every ~200ms; a fetch that
-   *  fails (e.g. the very first tick, before ffmpeg has written a frame yet)
-   *  just leaves the last successfully loaded frame on screen instead of
-   *  clearing it, so a brief hiccup degrades to a still frame, never a blank
-   *  or broken image. */
-  previewFrameUrl: string | null
 } {
   const videoRef = useRef<HTMLVideoElement>(null)
   const [error, setError] = useState<string | null>(null)
   const [releasedForRecording, setReleasedForRecording] = useState(false)
-  const [previewFrameUrl, setPreviewFrameUrl] = useState<string | null>(null)
 
   const target = cameraId ? (cameras.find((c) => c.id === cameraId) ?? null) : null
   const occurrence = target
@@ -213,55 +204,5 @@ export function useCameraPreview(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target?.id, occurrence, releasedForRecording, stationId])
 
-  // While the camera is recording (see above), poll the live-preview frame
-  // ffmpeg keeps overwriting instead of showing nothing. Each tick fetches
-  // the file fresh (query-string cache-bust) and swaps in a new blob: URL
-  // only once that fetch actually succeeds, revoking the previous one - so a
-  // single missed/failed poll just leaves the last good frame on screen
-  // rather than flashing a broken image.
-  useEffect(() => {
-    if (!releasedForRecording || !target) {
-      setPreviewFrameUrl((prev) => {
-        if (prev) URL.revokeObjectURL(prev)
-        return null
-      })
-      return
-    }
-
-    let cancelled = false
-    let currentObjectUrl: string | null = null
-
-    async function pollOnce(baseUrl: string): Promise<void> {
-      try {
-        const response = await fetch(`${baseUrl}?t=${Date.now()}`)
-        if (!response.ok) return
-        const blob = await response.blob()
-        if (cancelled) return
-        const nextUrl = URL.createObjectURL(blob)
-        const previous = currentObjectUrl
-        currentObjectUrl = nextUrl
-        setPreviewFrameUrl(nextUrl)
-        if (previous) URL.revokeObjectURL(previous)
-      } catch {
-        // Transient read/fetch failure - keep showing whatever frame is
-        // already displayed and try again on the next tick.
-      }
-    }
-
-    let intervalId: number | undefined
-    window.electronAPI.cameras.getPreviewFrameUrl(stationId).then((baseUrl) => {
-      if (cancelled) return
-      pollOnce(baseUrl)
-      intervalId = window.setInterval(() => pollOnce(baseUrl), PREVIEW_FRAME_POLL_MS)
-    })
-
-    return () => {
-      cancelled = true
-      if (intervalId) window.clearInterval(intervalId)
-      if (currentObjectUrl) URL.revokeObjectURL(currentObjectUrl)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [releasedForRecording, target?.id, stationId])
-
-  return { videoRef, error, releasedForRecording, previewFrameUrl }
+  return { videoRef, error, releasedForRecording }
 }

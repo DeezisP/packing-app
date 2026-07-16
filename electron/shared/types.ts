@@ -250,8 +250,11 @@ export interface OverlayConfig {
  *  ApiQueueService. `apiKey` is a live credential; it lives only in the
  *  per-machine config.json (gitignored, never the shipped
  *  config.default.json template), the same way saveLocation and every other
- *  machine-specific setting already does. */
-export interface ApiIntegrationConfig {
+ *  machine-specific setting already does. It is also never sent to the
+ *  renderer in plaintext once set - see registerIpcHandlers' config
+ *  sanitization - so it never round-trips through the Settings UI's own
+ *  state after the initial entry. */
+export interface WarehouseApiConfig {
   enabled: boolean
   baseUrl: string
   apiKey: string
@@ -259,7 +262,15 @@ export interface ApiIntegrationConfig {
    *  login, so it's one config-wide value rather than a real per-scan
    *  identity. */
   scannerUser: string
+  /** Per-request timeout in milliseconds. */
+  timeout: number
 }
+
+/** What the renderer sees in `warehouseApi.apiKey` in place of a real,
+ *  already-stored key - see registerIpcHandlers' sanitizeConfigForRenderer /
+ *  resolveIncomingConfigUpdate. Shared so main and renderer never drift on
+ *  the sentinel value. */
+export const API_KEY_PLACEHOLDER = '••••••••'
 
 export interface AppConfig {
   saveLocation: string
@@ -271,7 +282,7 @@ export interface AppConfig {
   activeStationId: string
   identifiedScanners: IdentifiedScanner[]
   overlay: OverlayConfig
-  apiIntegration: ApiIntegrationConfig
+  warehouseApi: WarehouseApiConfig
 }
 
 /** The values available to plug into an overlay line - some are static per

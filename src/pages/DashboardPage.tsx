@@ -5,6 +5,7 @@ import { WrongBarcodeToast } from '../components/dashboard/WrongBarcodeToast'
 import { DuplicateBarcodeDialog } from '../components/dashboard/DuplicateBarcodeDialog'
 import { UpdateAvailableModal } from '../components/dashboard/UpdateAvailableModal'
 import { GlassPanel } from '../components/common/GlassPanel'
+import { NotificationToast } from '../components/common/NotificationToast'
 import { useBarcodeListener } from '../hooks/useBarcodeListener'
 import { useStationsState } from '../hooks/useStationsState'
 import { useUpdateState } from '../hooks/useUpdateState'
@@ -27,6 +28,23 @@ export function DashboardPage({ config, onConfigChanged }: Props): JSX.Element {
 
   const updateAvailable = updateState.status === 'available' || updateState.status === 'downloaded'
   const showUpdateModal = updateAvailable && laterForVersion !== updateState.latestVersion
+
+  const [apiWarning, setApiWarning] = useState<string | null>(null)
+  useEffect(() => {
+    // Recording never depends on this - the warehouse API sync runs in the
+    // background and retries on its own (see ApiQueueService). This only
+    // ever tells the operator "the last attempt failed, still trying" - it
+    // never blocks or interrupts anything on screen.
+    let previousError: string | null = null
+    const off = window.electronAPI.apiQueue.onStatusChanged((status) => {
+      if (status.lastError && !previousError) {
+        setApiWarning(strings.dashboard.warehouseApiUnavailable)
+        window.setTimeout(() => setApiWarning(null), 6000)
+      }
+      previousError = status.lastError
+    })
+    return off
+  }, [])
 
   // Disabled stations stay configured (Settings can re-enable them) but never
   // render or accept scans - the grid below is sized purely off this list,
@@ -131,6 +149,13 @@ export function DashboardPage({ config, onConfigChanged }: Props): JSX.Element {
       </div>
 
       <AnimatePresence>{wrongBarcode && <WrongBarcodeToast key="wrong-barcode" event={wrongBarcode} />}</AnimatePresence>
+      <AnimatePresence>
+        {apiWarning && (
+          <NotificationToast key="api-warning" tone="warning" title={apiWarning} onDismiss={() => setApiWarning(null)}>
+            {strings.dashboard.warehouseApiUnavailableBody}
+          </NotificationToast>
+        )}
+      </AnimatePresence>
       <AnimatePresence>
         {duplicateBarcode && (
           <DuplicateBarcodeDialog key="duplicate-barcode" event={duplicateBarcode} onClose={dismissDuplicateBarcode} />

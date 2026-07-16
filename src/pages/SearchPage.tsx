@@ -140,10 +140,12 @@ export function SearchPage({ config }: Props): JSX.Element {
               </tr>
             </thead>
             <tbody>
-              {results.map((r) => (
+              {results.map((r) => {
+                const isPlayable = r.status === 'completed' || r.status === 'interrupted'
+                return (
                 <tr
                   key={r.id}
-                  onDoubleClick={() => setSelected(r)}
+                  onDoubleClick={() => isPlayable && setSelected(r)}
                   className="border-t border-white/5 hover:bg-white/[0.04] transition-colors duration-150 cursor-pointer"
                 >
                   <td className="px-4 py-2">
@@ -161,7 +163,7 @@ export function SearchPage({ config }: Props): JSX.Element {
                   </td>
                   <td className="px-4 py-2">
                     <div className="flex items-center gap-1.5">
-                      <AnimatedButton size="sm" onClick={() => setSelected(r)}>
+                      <AnimatedButton size="sm" disabled={!isPlayable} onClick={() => setSelected(r)}>
                         {T.actionPlay}
                       </AnimatedButton>
                       <AnimatedButton size="sm" onClick={() => window.electronAPI.recordings.openFolder(r.videoPath)}>
@@ -178,7 +180,8 @@ export function SearchPage({ config }: Props): JSX.Element {
                     </div>
                   </td>
                 </tr>
-              ))}
+                )
+              })}
               {results.length === 0 && (
                 <tr>
                   <td colSpan={10} className="px-4 py-8 text-center text-slate-600">

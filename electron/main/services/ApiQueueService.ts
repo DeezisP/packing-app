@@ -6,14 +6,15 @@ import type { ApiQueueStatus } from '@shared/types'
 
 const RETRY_INTERVAL_MS = 30000
 const BATCH_SIZE = 20
-const REQUEST_TIMEOUT_MS = 15000
 
 /** Reports every barcode scan to an external warehouse API as a durable,
  *  retrying outbox - see Database's api_queue table. Recording itself never
  *  depends on this succeeding (this app works fully offline; the API sync is
  *  a best-effort extra), so a scan is enqueued and persisted immediately,
  *  then this service drains it in the background on its own schedule,
- *  independent of the recording/barcode workflow. */
+ *  independent of the recording/barcode workflow. Runs entirely in the main
+ *  process - the renderer never sees the API key or makes this request
+ *  itself (see registerIpcHandlers' config sanitization). */
 class ApiQueueService extends EventEmitter {
   private timer: NodeJS.Timeout | null = null
   private processing = false
@@ -36,12 +37,12 @@ class ApiQueueService extends EventEmitter {
   /** No-op when the integration isn't enabled in Settings, so every call
    *  site (StationManager) can call this unconditionally on every scan
    *  without checking config itself. */
-  enqueue(kind: 'scan' | 'confirm', orderNumber: string, scannerDevice: string): void {
-    const config = configManager.get().apiIntegration
+  enqueue(kind: 'scan' | 'confirm', orderNumber: string, scannerDevice: string, station: string): void {
+    const config = configManager.get().warehouseApi
     if (!config.enabled) return
 
     database.enqueueApiScan({ kind, orderNumber, scannerDevice, scannerUser: config.scannerUser })
-    logger.info('Queued barcode scan for API sync', { kind, orderNumber, scannerDevice })
+    logger.info('Warehouse API: scan queued', { kind, orderNumber, scannerDevice, station })
     this.emit('queueChanged')
     this.processQueue().catch((err) => logger.error('API queue processing failed', { error: (err as Error).message }))
   }
@@ -52,14 +53,14 @@ class ApiQueueService extends EventEmitter {
 
   private async processQueue(): Promise<void> {
     if (this.processing) return
-    const config = configManager.get().apiIntegration
+    const config = configManager.get().warehouseApi
     if (!config.enabled || !config.apiKey || !config.baseUrl) return
 
     this.processing = true
     try {
       const pending = database.getPendingApiScans(BATCH_SIZE)
       for (const item of pending) {
-        const outcome = await this.sendOne(config.baseUrl, config.apiKey, item)
+        const outcome = await this.sendOne(config.baseUrl, config.apiKey, config.timeout, item)
         // A network-level failure (server unreachable, DNS down, timeout)
         // means every other queued item would fail the same way right now -
         // stop this pass instead of burning through the whole batch one
@@ -75,13 +76,26 @@ class ApiQueueService extends EventEmitter {
   private async sendOne(
     baseUrl: string,
     apiKey: string,
+    timeoutMs: number,
     item: ApiQueueItem
   ): Promise<'sent' | 'rejected' | 'network-error'> {
     const path = item.kind === 'confirm' ? '/scan/confirm' : '/scan'
     const url = `${baseUrl.replace(/\/+$/, '')}${path}`
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+    if (!url.toLowerCase().startsWith('https://')) {
+      logger.error('Warehouse API: refusing to call a non-HTTPS URL', { url })
+      database.markApiScanFailed(item.id, 'Base URL must use HTTPS')
+      this.emit('queueChanged')
+      return 'rejected'
+    }
 
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), timeoutMs)
+    const requestStartedAt = Date.now()
+
+    // Every request is logged - time, barcode, station is carried in the
+    // caller's enqueue() log line since it's not part of the wire payload,
+    // scanner, URL, response code, response time, success/failure. The key
+    // itself is never included in any log line.
     try {
       const response = await fetch(url, {
         method: 'POST',
@@ -93,31 +107,46 @@ class ApiQueueService extends EventEmitter {
         }),
         signal: controller.signal
       })
+      const responseTimeMs = Date.now() - requestStartedAt
 
       if (response.ok) {
         database.markApiScanSent(item.id)
         database.noteApiScanSuccess()
-        logger.info('API scan sync succeeded', { id: item.id, kind: item.kind, orderNumber: item.orderNumber })
+        logger.info('Warehouse API: request succeeded', {
+          orderNumber: item.orderNumber,
+          scannerDevice: item.scannerDevice,
+          url,
+          responseCode: response.status,
+          responseTimeMs,
+          outcome: 'success'
+        })
         this.emit('queueChanged')
         return 'sent'
       }
 
       const body = await response.text().catch(() => '')
-      const message = `HTTP ${response.status}${body ? `: ${body.slice(0, 200)}` : ''}`
-      database.markApiScanFailed(item.id, message)
-      logger.warn('API scan sync rejected by server', {
-        id: item.id,
-        status: response.status,
-        orderNumber: item.orderNumber
+      database.markApiScanFailed(item.id, `HTTP ${response.status}${body ? `: ${body.slice(0, 200)}` : ''}`)
+      logger.warn('Warehouse API: request rejected by server', {
+        orderNumber: item.orderNumber,
+        scannerDevice: item.scannerDevice,
+        url,
+        responseCode: response.status,
+        responseTimeMs,
+        outcome: 'failure'
       })
       this.emit('queueChanged')
       return 'rejected'
     } catch (err) {
+      const responseTimeMs = Date.now() - requestStartedAt
       const message = (err as Error).message
       database.markApiScanFailed(item.id, message)
-      logger.warn('API scan sync failed (network error)', {
-        id: item.id,
+      logger.warn('Warehouse API: request failed (network error)', {
         orderNumber: item.orderNumber,
+        scannerDevice: item.scannerDevice,
+        url,
+        responseCode: null,
+        responseTimeMs,
+        outcome: 'failure',
         error: message
       })
       this.emit('queueChanged')

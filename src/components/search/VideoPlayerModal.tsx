@@ -16,10 +16,29 @@ export function VideoPlayerModal({ recording, onClose }: Props): JSX.Element {
   const [playing, setPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
+  const [playbackError, setPlaybackError] = useState<string | null>(null)
 
   useEffect(() => {
+    window.electronAPI.system.log('info', 'Playback stage: initializing player', {
+      recordingId: recording.id,
+      barcode: recording.barcode,
+      videoPath: recording.videoPath,
+      status: recording.status
+    })
     window.electronAPI.recordings.markViewed(recording.id)
   }, [recording.id])
+
+  function handleVideoError(): void {
+    const mediaError = videoRef.current?.error
+    const message = mediaError ? mediaErrorMessage(mediaError.code) : 'ไม่สามารถเล่นวิดีโอได้'
+    setPlaybackError(message)
+    window.electronAPI.system.log('warn', 'Playback stage: video element failed to load', {
+      recordingId: recording.id,
+      barcode: recording.barcode,
+      videoPath: recording.videoPath,
+      mediaErrorCode: mediaError?.code ?? null
+    })
+  }
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent): void {
@@ -97,15 +116,23 @@ export function VideoPlayerModal({ recording, onClose }: Props): JSX.Element {
           </button>
         </div>
 
-        <video
-          ref={videoRef}
-          src={recording.videoUrl}
-          className="w-full bg-black max-h-[60vh]"
-          onPlay={() => setPlaying(true)}
-          onPause={() => setPlaying(false)}
-          onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
-          onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
-        />
+        <div className="relative">
+          <video
+            ref={videoRef}
+            src={recording.videoUrl}
+            className="w-full bg-black max-h-[60vh]"
+            onPlay={() => setPlaying(true)}
+            onPause={() => setPlaying(false)}
+            onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+            onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+            onError={handleVideoError}
+          />
+          {playbackError && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/85 text-warn-500 text-sm px-6 text-center">
+              {playbackError}
+            </div>
+          )}
+        </div>
 
         <div className="p-4 space-y-3">
           <input
@@ -138,4 +165,22 @@ export function VideoPlayerModal({ recording, onClose }: Props): JSX.Element {
       </motion.div>
     </motion.div>
   )
+}
+
+/** Maps the standard MediaError codes (https://developer.mozilla.org/docs/Web/API/MediaError/code)
+ *  to a Thai message - MEDIA_ERR_SRC_NOT_SUPPORTED (4) is what a genuinely
+ *  corrupt/unfinalized MP4 (no moov atom) surfaces as in Chromium. */
+function mediaErrorMessage(code: number): string {
+  switch (code) {
+    case 1:
+      return 'การเล่นวิดีโอถูกยกเลิก'
+    case 2:
+      return 'เกิดข้อผิดพลาดขณะโหลดไฟล์วิดีโอ'
+    case 3:
+      return 'ไม่สามารถถอดรหัสไฟล์วิดีโอได้ - ไฟล์อาจเสียหาย'
+    case 4:
+      return 'ไฟล์วิดีโอเสียหายหรือไม่สมบูรณ์ ไม่สามารถเล่นได้'
+    default:
+      return 'ไม่สามารถเล่นวิดีโอได้'
+  }
 }

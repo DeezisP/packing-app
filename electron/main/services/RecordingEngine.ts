@@ -5,7 +5,6 @@ import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import { resolveFfmpegPath } from './FfmpegLocator'
 import { logger } from './Logger'
-import { defaultPaths, previewFramePath } from './PathService'
 import { QUALITY_PRESETS, type StationConfig, type OverlayConfig } from '@shared/types'
 
 const SYSTEM_FONT_FILE = 'C:/Windows/Fonts/arial.ttf'
@@ -48,14 +47,6 @@ class RecordingEngine extends EventEmitter {
     fs.mkdirSync(outputDir, { recursive: true })
     const videoPath = path.join(outputDir, 'packing.mp4')
 
-    // A live-preview frame branch off the SAME capture session, not a second
-    // camera connection - see buildRecordArgs. This is what lets the
-    // dashboard keep showing a live (if downscaled/throttled) image during
-    // recording instead of freezing/hiding the preview, without ever opening
-    // the physical device twice.
-    fs.mkdirSync(defaultPaths.previewCacheDir, { recursive: true })
-    const previewPath = previewFramePath(station.id)
-
     const preset = QUALITY_PRESETS[station.qualityPreset]
     const ffmpegPath = resolveFfmpegPath()
     const args = buildRecordArgs({
@@ -66,11 +57,16 @@ class RecordingEngine extends EventEmitter {
       fps: station.fps,
       bitrateKbps: station.bitrateKbps,
       outputPath: videoPath,
-      previewFramePath: previewPath,
       overlay
     })
 
-    logger.info('Starting ffmpeg recording', { station: station.name, barcode, args: args.join(' ') })
+    logger.info('Recording start: launching ffmpeg', {
+      station: station.name,
+      barcode,
+      videoPath,
+      ffmpegPath,
+      commandLine: `${ffmpegPath} ${args.join(' ')}`
+    })
 
     const child = spawn(ffmpegPath, args, { stdio: ['pipe', 'pipe', 'pipe'] })
     const record: ActiveRecording = {
@@ -82,9 +78,15 @@ class RecordingEngine extends EventEmitter {
     }
     this.active.set(station.id, record)
 
-    let stderrTail = ''
+    // Kept in full (not just a tail) for this recording's lifetime and
+    // logged in full on every exit path - "warning" loglevel is quiet in the
+    // common case but must never be silently discarded, since a warning here
+    // (e.g. dropped frames, a muxer complaint) is exactly the kind of signal
+    // that explains a file that turns out unplayable despite ffmpeg exiting
+    // with code 0.
+    let stderrLog = ''
     child.stderr.on('data', (chunk: Buffer) => {
-      stderrTail = (stderrTail + chunk.toString()).slice(-4000)
+      stderrLog += chunk.toString()
     })
 
     child.on('exit', (code, signal) => {
@@ -94,13 +96,22 @@ class RecordingEngine extends EventEmitter {
         logger.error('ffmpeg exited unexpectedly during recording', {
           station: station.name,
           barcode,
+          videoPath,
           code,
           signal,
-          stderrTail
+          stderr: stderrLog.slice(-4000)
         })
-        this.emit('unexpectedExit', { stationId: station.id, barcode, message: summarizeFfmpegError(stderrTail) })
+        this.emit('unexpectedExit', { stationId: station.id, barcode, message: summarizeFfmpegError(stderrLog) })
       } else {
-        logger.info('ffmpeg recording stopped', { station: station.name, barcode, code, signal })
+        logger.info('Recording stop: ffmpeg process exited', {
+          station: station.name,
+          barcode,
+          videoPath,
+          code,
+          signal,
+          forcedKill: signal === 'SIGKILL',
+          stderr: stderrLog.trim() ? stderrLog.slice(-4000) : '(empty)'
+        })
       }
     })
 
@@ -276,10 +287,72 @@ class RecordingEngine extends EventEmitter {
       })
     })
   }
-}
 
-const PREVIEW_FRAME_FPS = 6
-const PREVIEW_FRAME_WIDTH = 640
+  /** Fully decodes the recorded file (output discarded, errors surfaced) to
+   *  confirm it's actually playable - not just present with a nonzero size.
+   *  A file force-killed mid-finalization (see stop()'s SIGKILL fallback)
+   *  can still exist on disk with real bytes in it despite having no moov
+   *  atom, which every player refuses to open - file size alone can't catch
+   *  that, only actually trying to decode it can. Reuses the already-bundled
+   *  ffmpeg.exe rather than adding an ffprobe dependency. */
+  async verifyRecording(videoPath: string): Promise<{
+    valid: boolean
+    error: string | null
+    sizeBytes: number
+    durationSeconds: number | null
+  }> {
+    let sizeBytes = 0
+    try {
+      sizeBytes = fs.statSync(videoPath).size
+    } catch {
+      return { valid: false, error: 'ไม่พบไฟล์วิดีโอที่บันทึกไว้', sizeBytes: 0, durationSeconds: null }
+    }
+    if (sizeBytes === 0) {
+      return { valid: false, error: 'ไฟล์วิดีโอมีขนาด 0 ไบต์', sizeBytes: 0, durationSeconds: null }
+    }
+
+    const ffmpegPath = resolveFfmpegPath()
+    const args = ['-hide_banner', '-i', videoPath, '-f', 'null', '-']
+    logger.info('File finalization: verifying recording is decodable', { videoPath, sizeBytes, commandLine: `${ffmpegPath} ${args.join(' ')}` })
+
+    return new Promise((resolve) => {
+      let stderr = ''
+      const child = spawn(ffmpegPath, args)
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderr += chunk.toString()
+      })
+      child.on('exit', (code) => {
+        const durationMatch = stderr.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/)
+        const durationSeconds = durationMatch
+          ? Number(durationMatch[1]) * 3600 + Number(durationMatch[2]) * 60 + Number(durationMatch[3])
+          : null
+        const fatalMarkers = ['moov atom not found', 'Invalid data found when processing input', 'could not find codec parameters']
+        const hasFatalError = fatalMarkers.some((marker) => stderr.toLowerCase().includes(marker.toLowerCase()))
+        const valid = code === 0 && !hasFatalError
+
+        logger.info('File finalization: verification result', {
+          videoPath,
+          valid,
+          exitCode: code,
+          sizeBytes,
+          durationSeconds,
+          stderr: stderr.trim() ? stderr.slice(-2000) : '(empty)'
+        })
+
+        resolve({
+          valid,
+          error: valid ? null : 'ไฟล์วิดีโอเสียหายหรือไม่สามารถเล่นได้ (ffmpeg ไม่สามารถถอดรหัสไฟล์ได้สำเร็จ)',
+          sizeBytes,
+          durationSeconds
+        })
+      })
+      child.on('error', (err) => {
+        logger.warn('File finalization: verification process failed to start', { videoPath, error: err.message })
+        resolve({ valid: false, error: err.message, sizeBytes, durationSeconds: null })
+      })
+    })
+  }
+}
 
 function buildRecordArgs(input: {
   /** Either the DirectShow "Alternative name" device path (unambiguous even
@@ -293,19 +366,21 @@ function buildRecordArgs(input: {
   fps: number
   bitrateKbps: number
   outputPath: string
-  /** A second output branch off this same capture session - a small,
-   *  throttled JPEG continuously overwritten at the same path, which is what
-   *  lets the dashboard show a live image during recording without ever
-   *  opening the camera a second time (see CameraManager's ownership
-   *  handoff). Omitted entirely for the diagnostics test-recording call,
-   *  which has no dashboard preview to feed. */
-  previewFramePath: string | null
   overlay: { config: OverlayConfig; textFilePath: string } | null
 }): string[] {
   const deviceSpec = input.micName
     ? `video=${input.cameraDeviceId}:audio=${input.micName}`
     : `video=${input.cameraDeviceId}`
 
+  // Single input, single output - a second ("live preview during recording")
+  // output branch was tried here and reverted: it risked the image2 preview
+  // muxer's frequent open/overwrite/close cycle stalling or erroring
+  // (observed contention with the renderer concurrently reading the same
+  // file), which can hang ffmpeg on the graceful 'q' shutdown long enough to
+  // hit the 10s SIGKILL fallback in stop() - killing ffmpeg mid-finalization
+  // is exactly what produces a recording with no moov atom, i.e. a saved but
+  // unplayable file. One input/one output keeps the actual recording's
+  // finalization dependent on nothing but itself.
   const args = [
     '-hide_banner',
     '-loglevel',
@@ -322,39 +397,19 @@ function buildRecordArgs(input: {
     deviceSpec
   ]
 
-  // Output 1: the actual recording, exactly as before.
-  args.push('-map', '0:v:0')
   if (input.overlay?.config.enabled) {
     args.push('-vf', buildOverlayFilter(input.overlay.config, input.overlay.textFilePath))
   }
+
   args.push('-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-b:v', `${input.bitrateKbps}k`)
+
   if (input.micName) {
-    args.push('-map', '0:a:0', '-c:a', 'aac', '-b:a', '128k')
+    args.push('-c:a', 'aac', '-b:a', '128k')
   } else {
     args.push('-an')
   }
+
   args.push('-movflags', '+faststart', '-y', input.outputPath)
-
-  // Output 2 (optional): the live-preview frame. No burned-in overlay here -
-  // the dashboard already draws barcode/station/camera/timer as a CSS layer
-  // on top (see OverlayPreview), so this only needs to be a small, cheap,
-  // continuously-refreshed image, not a duplicate of the recording's own
-  // drawtext output.
-  if (input.previewFramePath) {
-    args.push(
-      '-map',
-      '0:v:0',
-      '-vf',
-      `fps=${PREVIEW_FRAME_FPS},scale=${PREVIEW_FRAME_WIDTH}:-2`,
-      '-q:v',
-      '6',
-      '-update',
-      '1',
-      '-y',
-      input.previewFramePath
-    )
-  }
-
   return args
 }
 
