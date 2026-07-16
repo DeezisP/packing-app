@@ -16,6 +16,8 @@ export const IPC = {
   stationOnStateChanged: 'stations:onStateChanged',
   stationOnWrongBarcode: 'stations:onWrongBarcode',
   stationOnDuplicateBarcode: 'stations:onDuplicateBarcode',
+  stationsGetValidation: 'stations:getValidation',
+  stationOnValidationChanged: 'stations:onValidationChanged',
 
   // Barcode
   barcodeScan: 'barcode:scan',

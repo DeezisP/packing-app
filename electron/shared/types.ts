@@ -106,6 +106,71 @@ export interface StationConfig {
   saveLocationOverride: string | null
 }
 
+/** `scannerMissing`/`cameraMissing` cover both "never assigned" and "assigned
+ *  but that device id no longer resolves to anything currently known" -
+ *  operationally the same problem (a scan or a recording attempt at this
+ *  station has nowhere to go). `scannerDuplicate`/`cameraDuplicate` mean the
+ *  same physical device is wired to more than one station, which makes scan
+ *  routing and camera assignment ambiguous - see resolveStationCameraId and
+ *  StationManager.resolveTargetStationId, both of which just take the first
+ *  match and would otherwise silently ignore every other station sharing it. */
+export type StationValidationIssueType = 'scannerMissing' | 'cameraMissing' | 'scannerDuplicate' | 'cameraDuplicate'
+
+export interface StationValidationIssue {
+  stationId: string
+  stationName: string
+  type: StationValidationIssueType
+}
+
+/** Checks every *enabled* station's scanner/camera assignment against the
+ *  currently known device lists - disabled stations are exempt since they
+ *  never accept scans or record (see DashboardPage's enabledStations
+ *  filter), so an intentionally-parked station with no devices assigned
+ *  isn't reported as broken. `knownScannerIds`/`knownCameraIds` are the
+ *  device ids each device manager currently reports as present - a station
+ *  pointing at an id outside that set is exactly as unusable as one with no
+ *  id at all, so both cases fold into the same missing-* issue. Pure and
+ *  synchronous so it can run on every relevant change (config edit, device
+ *  plug/unplug) without any IPC round-trip of its own. */
+export function validateStations(
+  stations: StationConfig[],
+  knownScannerIds: ReadonlySet<string>,
+  knownCameraIds: ReadonlySet<string>
+): StationValidationIssue[] {
+  const enabled = stations.filter((s) => s.enabled)
+
+  const scannerOwners = new Map<string, StationConfig[]>()
+  const cameraOwners = new Map<string, StationConfig[]>()
+  for (const station of enabled) {
+    if (station.scannerDeviceId) {
+      const group = scannerOwners.get(station.scannerDeviceId) ?? []
+      group.push(station)
+      scannerOwners.set(station.scannerDeviceId, group)
+    }
+    if (station.cameraId) {
+      const group = cameraOwners.get(station.cameraId) ?? []
+      group.push(station)
+      cameraOwners.set(station.cameraId, group)
+    }
+  }
+
+  const issues: StationValidationIssue[] = []
+  for (const station of enabled) {
+    if (!station.scannerDeviceId || !knownScannerIds.has(station.scannerDeviceId)) {
+      issues.push({ stationId: station.id, stationName: station.name, type: 'scannerMissing' })
+    } else if ((scannerOwners.get(station.scannerDeviceId)?.length ?? 0) > 1) {
+      issues.push({ stationId: station.id, stationName: station.name, type: 'scannerDuplicate' })
+    }
+
+    if (!station.cameraId || !knownCameraIds.has(station.cameraId)) {
+      issues.push({ stationId: station.id, stationName: station.name, type: 'cameraMissing' })
+    } else if ((cameraOwners.get(station.cameraId)?.length ?? 0) > 1) {
+      issues.push({ stationId: station.id, stationName: station.name, type: 'cameraDuplicate' })
+    }
+  }
+  return issues
+}
+
 export type ThemeMode = 'dark' | 'light'
 
 /** A scanner the operator has explicitly confirmed via the Identify Scanner

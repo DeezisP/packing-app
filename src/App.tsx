@@ -6,7 +6,9 @@ import { SettingsPage } from './pages/SettingsPage'
 import { DevicePairingPage } from './pages/DevicePairingPage'
 import { BottomPanel } from './components/common/BottomPanel'
 import { SaveLocationWarningBanner } from './components/common/SaveLocationWarningBanner'
+import { StationValidationBanner } from './components/common/StationValidationBanner'
 import { useSaveLocationStatus } from './hooks/useSaveLocationStatus'
+import { useStationValidation } from './hooks/useStationValidation'
 import { strings } from './lib/strings'
 import type { AppConfig } from '../electron/shared/types'
 
@@ -23,6 +25,7 @@ export default function App(): JSX.Element {
   const [config, setConfig] = useState<AppConfig | null>(null)
   const [tab, setTab] = useState<Tab>('dashboard')
   const saveLocationStatus = useSaveLocationStatus()
+  const stationValidationIssues = useStationValidation()
 
   useEffect(() => {
     window.electronAPI.config.get().then(setConfig)
@@ -78,6 +81,11 @@ export default function App(): JSX.Element {
       <AnimatePresence>
         {saveLocationStatus && !saveLocationStatus.writable && (
           <SaveLocationWarningBanner key="save-location-banner" status={saveLocationStatus} />
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {stationValidationIssues.length > 0 && (
+          <StationValidationBanner key="station-validation-banner" issues={stationValidationIssues} />
         )}
       </AnimatePresence>
 

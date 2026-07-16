@@ -65,6 +65,8 @@ export function registerIpcHandlers(): void {
     configManager.update({ activeStationId: stationId })
   })
 
+  ipcMain.handle(IPC.stationsGetValidation, () => stationManager.getValidationIssues())
+
   ipcMain.handle(IPC.barcodeScan, async (_e, stationId: string, barcode: string, deviceId: string | null) => {
     await stationManager.handleScan(stationId, barcode.trim(), deviceId ?? null)
   })
@@ -176,6 +178,7 @@ export function registerIpcHandlers(): void {
   stationManager.on('wrongBarcode', (event) => broadcast(IPC.stationOnWrongBarcode, event))
   stationManager.on('duplicateBarcode', (event) => broadcast(IPC.stationOnDuplicateBarcode, event))
   stationManager.on('saveLocationStatus', (status) => broadcast(IPC.configOnSaveLocationStatus, status))
+  stationManager.on('validationChanged', (issues) => broadcast(IPC.stationOnValidationChanged, issues))
   cameraManager.on('changed', (payload) => broadcast(IPC.cameraOnListChanged, payload))
   scannerManager.on('changed', (devices) => broadcast(IPC.scannersOnListChanged, devices))
   rawInputService.on('keydown', (payload) => broadcast(IPC.scannersOnRawKeydown, payload))

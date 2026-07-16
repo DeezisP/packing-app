@@ -43,6 +43,16 @@ scanner (or if Raw Input can't be used for some reason - see Known limitations) 
 stations - click still works for any station beyond that) to make it active, then the next scan
 anywhere routes there.
 
+Scanner and camera are both plain fields on the same station record (`scannerDeviceId`, `cameraId`)
+- there's no separate mapping table to keep in sync, so a scan's route to "the right camera" is
+always: physical scanner → the one station with that `scannerDeviceId` → that station's `cameraId`.
+Assigning a camera to a station in Settings automatically un-assigns it from wherever it was before
+(the same way pairing a scanner to a station in Device Pairing already did), so the same physical
+camera can never end up wired to two stations at once. If a config still ends up with a station
+missing a scanner/camera, or two stations pointing at the same one (e.g. hand-edited config.json),
+a warning banner - checked on startup and kept live as devices and config change - names exactly
+which stations and which problem, app-wide, not just on the page where you'd go to fix it.
+
 ### Managing packing stations
 
 Settings → **Packing Stations** manages the full list:

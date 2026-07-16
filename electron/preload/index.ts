@@ -14,7 +14,8 @@ import type {
   SaveLocationStatus,
   UpdateState,
   DiagnosticsSnapshot,
-  DiagnosticsTestResult
+  DiagnosticsTestResult,
+  StationValidationIssue
 } from '@shared/types'
 
 const api = {
@@ -59,6 +60,14 @@ const api = {
       ipcRenderer.on(IPC.stationOnDuplicateBarcode, listener)
       return (): void => {
         ipcRenderer.removeListener(IPC.stationOnDuplicateBarcode, listener)
+      }
+    },
+    getValidation: (): Promise<StationValidationIssue[]> => ipcRenderer.invoke(IPC.stationsGetValidation),
+    onValidationChanged: (cb: (issues: StationValidationIssue[]) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, issues: StationValidationIssue[]): void => cb(issues)
+      ipcRenderer.on(IPC.stationOnValidationChanged, listener)
+      return (): void => {
+        ipcRenderer.removeListener(IPC.stationOnValidationChanged, listener)
       }
     }
   },

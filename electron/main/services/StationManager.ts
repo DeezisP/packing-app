@@ -11,14 +11,15 @@ import { writeRecordingMetadata } from './MetadataService'
 import { getDiskUsage, CRITICAL_DISK_STOP_BYTES } from './DiskMonitor'
 import { validateSaveLocation } from './SaveLocationValidator'
 import { logger } from './Logger'
-import { RESOLUTION_PRESETS, buildCameraDisplayNames } from '@shared/types'
+import { RESOLUTION_PRESETS, buildCameraDisplayNames, validateStations } from '@shared/types'
 import type {
   StationRuntimeState,
   WrongBarcodeEvent,
   DuplicateBarcodeEvent,
   StationConfig,
   ScannerDevice,
-  SaveLocationStatus
+  SaveLocationStatus,
+  StationValidationIssue
 } from '@shared/types'
 
 const TICK_INTERVAL_MS = 1000
@@ -40,6 +41,7 @@ class StationManager extends EventEmitter {
   private tickTimer: NodeJS.Timeout | null = null
   private saveLocationHealthTimer: NodeJS.Timeout | null = null
   private lastSaveLocationStatus: SaveLocationStatus | null = null
+  private lastValidationIssues: StationValidationIssue[] = []
 
   init(): void {
     for (const station of configManager.get().stations) {
@@ -87,6 +89,7 @@ class StationManager extends EventEmitter {
           }
         }
       }
+      this.recheckValidation()
     })
 
     scannerManager.on('changed', () => {
@@ -106,6 +109,7 @@ class StationManager extends EventEmitter {
           }
         }
       }
+      this.recheckValidation()
     })
 
     configManager.on('changed', (cfg: { stations: StationConfig[] }) => this.reconcileStations(cfg.stations))
@@ -116,6 +120,7 @@ class StationManager extends EventEmitter {
         logger.error('Save location health check failed', { error: (err as Error).message })
       )
     })
+    configManager.on('changed', () => this.recheckValidation())
 
     this.tickTimer = setInterval(() => this.tick(), TICK_INTERVAL_MS)
     this.saveLocationHealthTimer = setInterval(
@@ -125,6 +130,48 @@ class StationManager extends EventEmitter {
     this.checkSaveLocationHealth().catch((err) =>
       logger.error('Initial save location health check failed', { error: (err as Error).message })
     )
+
+    // Startup validation - runs once against whatever CameraManager/
+    // ScannerManager already know at this point (their own startPolling()
+    // initial scan has usually completed by the time StationManager.init()
+    // runs; if not, the 'changed' handlers above catch it moments later).
+    this.recheckValidation()
+  }
+
+  /** Re-derives the current list of scanner/camera assignment problems
+   *  (missing or duplicated) and, only when it actually changed, logs each
+   *  one and emits 'validationChanged' for the renderer to pick up - see
+   *  validateStations() for exactly what counts as an issue. */
+  private recheckValidation(): void {
+    const knownScannerIds = new Set(
+      scannerManager
+        .getLastKnownDevices()
+        .filter((d) => d.connected)
+        .map((d) => d.id)
+    )
+    const knownCameraIds = new Set(cameraManager.getLastKnownDevices().map((d) => d.id))
+    const issues = validateStations(configManager.get().stations, knownScannerIds, knownCameraIds)
+
+    const changed = JSON.stringify(issues) !== JSON.stringify(this.lastValidationIssues)
+    this.lastValidationIssues = issues
+    if (!changed) return
+
+    if (issues.length === 0) {
+      logger.info('Station validation: no issues')
+    } else {
+      for (const issue of issues) {
+        logger.warn('Station validation issue', {
+          stationId: issue.stationId,
+          station: issue.stationName,
+          type: issue.type
+        })
+      }
+    }
+    this.emit('validationChanged', issues)
+  }
+
+  getValidationIssues(): StationValidationIssue[] {
+    return this.lastValidationIssues
   }
 
   /** Proactively surfaces "save folder became unavailable" (deleted, network

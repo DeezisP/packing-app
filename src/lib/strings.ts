@@ -137,6 +137,15 @@ export const strings = {
     suffix: 'การบันทึกใหม่จะถูกระงับจนกว่าจะเลือกโฟลเดอร์ที่ใช้งานได้ในหน้าตั้งค่า'
   },
 
+  stationValidation: {
+    title: 'พบปัญหาการตั้งค่าสถานี:',
+    scannerMissing: (station: string): string =>
+      `${station} - ยังไม่ได้จับคู่สแกนเนอร์ (ต้องเลือกสถานีด้วยตนเองเมื่อสแกน)`,
+    cameraMissing: (station: string): string => `${station} - ยังไม่ได้กำหนดกล้อง`,
+    scannerDuplicate: (station: string): string => `${station} - สแกนเนอร์นี้ถูกกำหนดให้มากกว่าหนึ่งสถานี`,
+    cameraDuplicate: (station: string): string => `${station} - กล้องนี้ถูกกำหนดให้มากกว่าหนึ่งสถานี`
+  },
+
   bottomPanel: {
     recentRecordings: 'การบันทึกล่าสุด',
     noRecordingsYet: 'ยังไม่มีการบันทึก',

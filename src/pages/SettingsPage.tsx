@@ -76,7 +76,18 @@ export function SettingsPage({ config, onConfigChanged }: Props): JSX.Element {
   }
 
   function updateStation(id: string, partial: Partial<StationConfig>): void {
-    const stations = draft.stations.map((s) => (s.id === id ? { ...s, ...partial } : s))
+    const stations = draft.stations.map((s) => {
+      if (s.id === id) return { ...s, ...partial }
+      // A physical camera can only ever belong to one station - assigning it
+      // here un-assigns it from wherever it was before, the same way
+      // assignScannerToStation (Device Pairing) already keeps scanner
+      // assignments exclusive. Without this, two stations could silently
+      // point at the same camera id and StationManager.resolveStationCamera
+      // (which just returns the first live match) would make the second
+      // station's assignment a no-op.
+      if (partial.cameraId && s.cameraId === partial.cameraId) return { ...s, cameraId: null, cameraName: null }
+      return s
+    })
     persist({ ...draft, stations })
   }
 
