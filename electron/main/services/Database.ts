@@ -140,11 +140,8 @@ class DatabaseService {
     const SQL = await initSqlJs({ locateFile: (file: string) => path.join(wasmDir, file) })
 
     fs.mkdirSync(path.dirname(defaultPaths.databaseFile), { recursive: true })
-    if (fs.existsSync(defaultPaths.databaseFile)) {
-      this.db = new SQL.Database(fs.readFileSync(defaultPaths.databaseFile))
-    } else {
-      this.db = new SQL.Database()
-    }
+    fs.mkdirSync(path.dirname(defaultPaths.databaseBackupFile), { recursive: true })
+    this.db = this.openWithFallback(SQL)
     this.db.run(SCHEMA)
     this.flush()
 
@@ -155,11 +152,65 @@ class DatabaseService {
     logger.info('Database initialized', { path: defaultPaths.databaseFile })
   }
 
+  /** Mirrors ConfigManager's exact primary-then-backup fallback: the primary
+   *  database.sqlite lives next to the .exe (appRoot) with no protection of
+   *  its own, the same place config.json used to live before it needed a
+   *  userData backup to reliably survive an app update/reinstall - this is
+   *  that same fix applied to the recording history, which had it happen to
+   *  it silently (History page just showing empty) instead of loudly. */
+  private openWithFallback(SQL: Awaited<ReturnType<typeof initSqlJs>>): SqlJsDatabase {
+    const primaryBytes = this.readDatabaseFile(defaultPaths.databaseFile)
+    if (primaryBytes) {
+      try {
+        return new SQL.Database(primaryBytes)
+      } catch (err) {
+        logger.error('database.sqlite exists but failed to open - trying backup', { error: (err as Error).message })
+      }
+    }
+
+    const backupBytes = this.readDatabaseFile(defaultPaths.databaseBackupFile)
+    if (backupBytes) {
+      try {
+        const db = new SQL.Database(backupBytes)
+        logger.warn('database.sqlite missing or unreadable - restored recording history from backup', {
+          backup: defaultPaths.databaseBackupFile
+        })
+        return db
+      } catch (err) {
+        logger.error('Backup database also failed to open - starting a fresh, empty database', {
+          error: (err as Error).message
+        })
+      }
+    }
+
+    return new SQL.Database()
+  }
+
+  private readDatabaseFile(filePath: string): Buffer | null {
+    if (!fs.existsSync(filePath)) return null
+    try {
+      return fs.readFileSync(filePath)
+    } catch (err) {
+      logger.error('Failed to read database file', { filePath, error: (err as Error).message })
+      return null
+    }
+  }
+
   private flush(): void {
-    const data = this.db.export()
+    const buffer = Buffer.from(this.db.export())
+
     const tmpPath = `${defaultPaths.databaseFile}.tmp`
-    fs.writeFileSync(tmpPath, Buffer.from(data))
+    fs.writeFileSync(tmpPath, buffer)
     fs.renameSync(tmpPath, defaultPaths.databaseFile)
+
+    try {
+      const backupTmpPath = `${defaultPaths.databaseBackupFile}.tmp`
+      fs.writeFileSync(backupTmpPath, buffer)
+      fs.renameSync(backupTmpPath, defaultPaths.databaseBackupFile)
+    } catch (err) {
+      logger.error('Failed to write database backup', { error: (err as Error).message })
+    }
+
     this.dirty = false
   }
 

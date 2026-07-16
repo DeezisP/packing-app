@@ -46,7 +46,13 @@ export const defaultPaths = {
   // even a full reinstall to a different folder, since userData is a stable
   // per-user OS location electron manages independently of where the app
   // itself is installed.
-  configBackupFile: path.join(app.getPath('userData'), 'config.backup.json')
+  configBackupFile: path.join(app.getPath('userData'), 'config.backup.json'),
+  // Same reasoning and same fix as configBackupFile above, applied to the
+  // recording history database - it lived in appRoot with no fallback at
+  // all, so anything that disrupted appRoot across an update/reinstall
+  // (exactly the failure mode config.json already needed this fix for)
+  // silently reset the History page to empty instead of erroring loudly.
+  databaseBackupFile: path.join(app.getPath('userData'), 'database.backup.sqlite')
 }
 
 export function resolveSaveLocation(saveLocation: string): string {
