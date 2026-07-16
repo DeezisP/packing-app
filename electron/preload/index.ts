@@ -18,7 +18,9 @@ import type {
   StationValidationIssue,
   DeleteRecordingResult,
   CameraCapabilityOption,
-  ApiQueueStatus
+  ApiQueueStatus,
+  WarehouseApiConfig,
+  WarehouseApiTestResult
 } from '@shared/types'
 
 const api = {
@@ -177,6 +179,10 @@ const api = {
         ipcRenderer.removeListener(IPC.apiQueueOnStatusChanged, listener)
       }
     }
+  },
+  warehouseApi: {
+    testConnection: (draft: WarehouseApiConfig): Promise<WarehouseApiTestResult> =>
+      ipcRenderer.invoke(IPC.warehouseApiTestConnection, draft)
   }
 }
 

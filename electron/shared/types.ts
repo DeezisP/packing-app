@@ -256,7 +256,9 @@ export interface OverlayConfig {
  *  state after the initial entry. */
 export interface WarehouseApiConfig {
   enabled: boolean
-  baseUrl: string
+  /** The exact endpoint every scan is POSTed to - not a prefix, no path is
+   *  appended to it. */
+  url: string
   apiKey: string
   /** Sent as `scannerUser` on every request - this app has no per-operator
    *  login, so it's one config-wide value rather than a real per-scan
@@ -271,6 +273,18 @@ export interface WarehouseApiConfig {
  *  resolveIncomingConfigUpdate. Shared so main and renderer never drift on
  *  the sentinel value. */
 export const API_KEY_PLACEHOLDER = '••••••••'
+
+/** Result of a one-off, unqueued diagnostic POST triggered by the Settings
+ *  page's "Test Connection" button - distinct from the real scan queue
+ *  (ApiQueueService), which never surfaces its raw HTTP response back to
+ *  the renderer this way. */
+export interface WarehouseApiTestResult {
+  success: boolean
+  statusCode: number | null
+  responseBody: string | null
+  error: string | null
+  durationMs: number
+}
 
 export interface AppConfig {
   saveLocation: string

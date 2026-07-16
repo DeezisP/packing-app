@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events'
 import { defaultPaths, resolveSaveLocation } from './PathService'
 import { logger } from './Logger'
 import { QUALITY_PRESETS, DEFAULT_QUALITY_PRESET_ID } from '@shared/types'
-import type { AppConfig, StationConfig, QualityPresetId } from '@shared/types'
+import type { AppConfig, StationConfig, QualityPresetId, WarehouseApiConfig } from '@shared/types'
 
 class ConfigManager extends EventEmitter {
   private config: AppConfig
@@ -70,7 +70,12 @@ class ConfigManager extends EventEmitter {
   // Shallow-merge so new fields introduced by app updates get sane defaults.
   private mergeWithDefaults(parsed: Partial<AppConfig>, fallback: AppConfig): AppConfig {
     const stations = parsed.stations?.length ? parsed.stations : fallback.stations
-    return { ...fallback, ...parsed, stations: stations.map(normalizeStation) }
+    return {
+      ...fallback,
+      ...parsed,
+      stations: stations.map(normalizeStation),
+      warehouseApi: normalizeWarehouseApi(parsed.warehouseApi, fallback.warehouseApi)
+    }
   }
 
   private persist(): void {
@@ -141,6 +146,25 @@ function migrateQualityPreset(station: Partial<StationConfig> & { resolutionPres
   if (legacy === '1080p' && station.fps === 60) return '1080p60'
   if (legacy && legacy in LEGACY_RESOLUTION_TO_PRESET) return LEGACY_RESOLUTION_TO_PRESET[legacy]
   return DEFAULT_QUALITY_PRESET_ID
+}
+
+// A config saved between v1.7.1 and v1.7.2 has warehouseApi.baseUrl instead
+// of the current warehouseApi.url (the field was renamed once the
+// integration settled on a single, exact endpoint rather than a prefix with
+// paths appended) - read the old name if the new one isn't there yet, so an
+// already-configured URL isn't silently dropped by the rename.
+function normalizeWarehouseApi(
+  raw: (Partial<WarehouseApiConfig> & { baseUrl?: string }) | undefined,
+  fallback: WarehouseApiConfig
+): WarehouseApiConfig {
+  if (!raw) return fallback
+  return {
+    enabled: raw.enabled ?? fallback.enabled,
+    url: raw.url ?? raw.baseUrl ?? fallback.url,
+    apiKey: raw.apiKey ?? fallback.apiKey,
+    scannerUser: raw.scannerUser ?? fallback.scannerUser,
+    timeout: raw.timeout ?? fallback.timeout
+  }
 }
 
 // Fills in fields added after a config might have already been written to

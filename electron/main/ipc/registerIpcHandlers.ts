@@ -61,6 +61,16 @@ export function registerIpcHandlers(): void {
     sanitizeConfigForRenderer(configManager.update(resolveIncomingConfigUpdate(partial)))
   )
 
+  // Tests against the renderer's current draft settings (which may not be
+  // saved yet) rather than the stored config, so "Test Connection" works
+  // before hitting Save - resolveIncomingConfigUpdate handles the case where
+  // the apiKey field still holds the placeholder (user didn't touch it) by
+  // substituting the real stored key.
+  ipcMain.handle(IPC.warehouseApiTestConnection, (_e, draftWarehouseApi: AppConfig['warehouseApi']) => {
+    const resolved = resolveIncomingConfigUpdate({ warehouseApi: draftWarehouseApi })
+    return apiQueueService.testConnection(resolved.warehouseApi!)
+  })
+
   ipcMain.handle(IPC.configPickFolder, async () => {
     const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
     if (result.canceled || result.filePaths.length === 0) return null

@@ -252,7 +252,7 @@ export const strings = {
     apiIntegrationBody:
       'ส่งข้อมูลบาร์โค้ดที่สแกนไปยังระบบคลังสินค้าภายนอกโดยอัตโนมัติผ่านคิวสำรอง - หากเชื่อมต่อไม่ได้ชั่วคราว ระบบจะลองส่งใหม่โดยอัตโนมัติในภายหลังโดยไม่กระทบการบันทึกวิดีโอ',
     apiEnable: 'เปิดใช้งาน',
-    apiBaseUrl: 'URL ของ API',
+    apiUrl: 'API URL',
     apiKey: 'API Key',
     apiKeyPlaceholder: 'วาง API Key ที่นี่',
     apiKeyShow: 'แสดง',
@@ -261,6 +261,12 @@ export const strings = {
     apiScannerUser: 'ชื่อผู้ใช้สแกนเนอร์ (scannerUser)',
     apiScannerUserPlaceholder: 'เช่น somchai',
     apiTimeout: 'ระยะเวลารอสูงสุด (มิลลิวินาที)',
+    apiTestConnection: 'ทดสอบการเชื่อมต่อ',
+    apiTesting: 'กำลังทดสอบ...',
+    apiTestSuccess: '✓ เชื่อมต่อสำเร็จ',
+    apiTestFailed: '✗ การเชื่อมต่อล้มเหลว',
+    apiTestStatus: (code: number | null): string => `สถานะ: ${code ?? '-'}`,
+    apiTestResponse: 'การตอบกลับ:',
     apiQueuePending: (n: number): string => `รอส่งในคิว: ${n} รายการ`,
     apiQueueLastError: (err: string): string => `ข้อผิดพลาดล่าสุด: ${err}`,
     apiQueueLastSuccess: (t: string): string => `ส่งสำเร็จล่าสุด: ${t}`

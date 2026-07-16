@@ -7,8 +7,8 @@
   "activeStationId": "station-a",
   "identifiedScanners": [],
   "warehouseApi": {
-    "enabled": false,
-    "baseUrl": "https://www.perfectelt.com/perfect/v1/warehouse/mobile",
+    "enabled": true,
+    "url": "https://www.perfectelt.com/perfect/v1/warehouse/mobile/scan",
     "apiKey": "",
     "scannerUser": "",
     "timeout": 10000

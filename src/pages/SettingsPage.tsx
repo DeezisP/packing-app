@@ -29,6 +29,7 @@ import type {
   OverlayConfig,
   QualityPresetId,
   WarehouseApiConfig,
+  WarehouseApiTestResult,
   ApiQueueStatus
 } from '../../electron/shared/types'
 
@@ -480,6 +481,8 @@ function WarehouseApiSection({
 }): JSX.Element {
   const [showKey, setShowKey] = useState(false)
   const [status, setStatus] = useState<ApiQueueStatus | null>(null)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<WarehouseApiTestResult | null>(null)
   const keyAlreadyConfigured = config.apiKey === API_KEY_PLACEHOLDER
 
   useEffect(() => {
@@ -498,6 +501,17 @@ function WarehouseApiSection({
     }
   }, [])
 
+  async function runTest(): Promise<void> {
+    setTesting(true)
+    setTestResult(null)
+    // Sent as-is, including a still-placeholder apiKey - the main process
+    // resolves that back to the real stored key (see registerIpcHandlers),
+    // so testing works whether or not the key field was just edited.
+    const result = await window.electronAPI.warehouseApi.testConnection(config)
+    setTestResult(result)
+    setTesting(false)
+  }
+
   return (
     <Section title={T.sectionApiIntegration}>
       <p className="text-sm text-slate-400">{T.apiIntegrationBody}</p>
@@ -514,10 +528,10 @@ function WarehouseApiSection({
           />
         </Field>
         <div className="md:col-span-2">
-          <Field label={T.apiBaseUrl}>
+          <Field label={T.apiUrl}>
             <input
-              value={config.baseUrl}
-              onChange={(e) => onChange({ baseUrl: e.target.value })}
+              value={config.url}
+              onChange={(e) => onChange({ url: e.target.value })}
               className="w-full bg-surface-800/60 border border-white/10 rounded-lg px-3 py-2 text-sm font-mono"
             />
           </Field>
@@ -559,6 +573,31 @@ function WarehouseApiSection({
           />
         </Field>
       </div>
+
+      <div className="mt-4">
+        <AnimatedButton onClick={runTest} disabled={testing}>
+          {testing ? T.apiTesting : T.apiTestConnection}
+        </AnimatedButton>
+        {testResult && (
+          <div
+            className={`mt-3 rounded-lg border p-3 text-xs font-mono whitespace-pre-wrap break-all ${
+              testResult.success ? 'border-ok-500/30 bg-ok-500/10 text-ok-500' : 'border-rec-500/30 bg-rec-500/10 text-rec-500'
+            }`}
+          >
+            <p className="font-semibold">{testResult.success ? T.apiTestSuccess : T.apiTestFailed}</p>
+            <p className="mt-1">{T.apiTestStatus(testResult.statusCode)}</p>
+            {testResult.responseBody && (
+              <p className="mt-1 text-slate-300">
+                {T.apiTestResponse}
+                {'\n'}
+                {testResult.responseBody}
+              </p>
+            )}
+            {!testResult.success && testResult.error && !testResult.responseBody && <p className="mt-1">{testResult.error}</p>}
+          </div>
+        )}
+      </div>
+
       {status && (config.enabled || status.pending > 0) && (
         <div className="mt-4 text-xs text-slate-500 flex items-center gap-4 flex-wrap">
           <span>{T.apiQueuePending(status.pending)}</span>

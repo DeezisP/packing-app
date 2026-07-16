@@ -65,7 +65,8 @@ export const IPC = {
 
   // External warehouse API scan queue
   apiQueueGetStatus: 'apiQueue:getStatus',
-  apiQueueOnStatusChanged: 'apiQueue:onStatusChanged'
+  apiQueueOnStatusChanged: 'apiQueue:onStatusChanged',
+  warehouseApiTestConnection: 'warehouseApi:testConnection'
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]
