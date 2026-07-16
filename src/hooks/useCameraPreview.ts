@@ -71,15 +71,26 @@ function labelMatchesCameraName(label: string, name: string): boolean {
  *  observed convention - but it only affects which of two *identical-model*
  *  live previews is shown; actual recording is always exact regardless,
  *  since ffmpeg opens the unique device path directly (see RecordingEngine). */
+/** `stationId` is only ever used as an ownership label (see CameraManager /
+ *  registerIpcHandlers) - a synthetic id like `'diagnostics'` is fine for a
+ *  preview that isn't tied to a packing station. */
 export function useCameraPreview(
   cameraId: string | null,
-  cameras: CameraDevice[]
+  cameras: CameraDevice[],
+  stationId: string
 ): {
   videoRef: React.RefObject<HTMLVideoElement>
   error: string | null
+  /** True while this preview has deliberately let go of the camera because a
+   *  recording is using it - distinct from `error`, since this isn't a
+   *  failure, just the ffmpeg/preview handoff (see Option B in
+   *  CameraManager's ownership doc comment). Preview resumes automatically
+   *  the moment recording releases the camera back. */
+  releasedForRecording: boolean
 } {
   const videoRef = useRef<HTMLVideoElement>(null)
   const [error, setError] = useState<string | null>(null)
+  const [releasedForRecording, setReleasedForRecording] = useState(false)
 
   const target = cameraId ? (cameras.find((c) => c.id === cameraId) ?? null) : null
   const occurrence = target
@@ -89,8 +100,45 @@ export function useCameraPreview(
         .findIndex((c) => c.id === target.id)
     : -1
 
+  // Listens for the main process asking this camera's preview to let go
+  // (about to record) or confirming it's safe to resume (recording stopped).
+  // Filtered to this hook's own camera id so unrelated stations' handoffs
+  // are ignored.
+  useEffect(() => {
+    if (!target) return
+    const targetId = target.id
+    let cancelled = false
+
+    // Covers the reverse race from the release-broadcast handshake below:
+    // this component could mount (or remount) while ffmpeg already owns the
+    // camera - e.g. right at app startup, or a very fast scan right after
+    // the dashboard renders - in which case there was no release broadcast
+    // to react to, since the camera was never the preview's to begin with.
+    window.electronAPI.cameras.getOwner(targetId).then((owner) => {
+      if (!cancelled && owner === 'ffmpeg') setReleasedForRecording(true)
+    })
+
+    const offRelease = window.electronAPI.cameras.onReleaseForRecording((payload) => {
+      if (payload.cameraId === targetId) setReleasedForRecording(true)
+    })
+    const offReacquire = window.electronAPI.cameras.onReacquireAfterRecording((payload) => {
+      if (payload.cameraId === targetId) setReleasedForRecording(false)
+    })
+    return () => {
+      cancelled = true
+      offRelease()
+      offReacquire()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target?.id])
+
   useEffect(() => {
     if (!target) {
+      setError(null)
+      return
+    }
+
+    if (releasedForRecording) {
       setError(null)
       return
     }
@@ -128,6 +176,7 @@ export function useCameraPreview(
           videoRef.current.srcObject = stream
         }
         setError(null)
+        window.electronAPI.cameras.reportPreviewOwnership(target!.id, stationId, true)
       } catch (err) {
         const message = (err as Error).message
         window.electronAPI.system.log('warn', 'Preview stage: attach failed', {
@@ -143,10 +192,13 @@ export function useCameraPreview(
 
     return () => {
       cancelled = true
-      stream?.getTracks().forEach((t) => t.stop())
+      if (stream) {
+        stream.getTracks().forEach((t) => t.stop())
+        window.electronAPI.cameras.reportPreviewOwnership(target!.id, stationId, false)
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target?.id, occurrence])
+  }, [target?.id, occurrence, releasedForRecording, stationId])
 
-  return { videoRef, error }
+  return { videoRef, error, releasedForRecording }
 }

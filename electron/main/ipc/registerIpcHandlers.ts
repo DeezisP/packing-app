@@ -82,6 +82,12 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.camerasGetCapabilities, (_e, cameraId: string) => cameraManager.getCapabilities(cameraId))
 
+  ipcMain.handle(IPC.camerasGetOwner, (_e, cameraId: string) => cameraManager.getOwner(cameraId))
+
+  ipcMain.handle(IPC.cameraReportPreviewOwnership, (_e, cameraId: string, stationId: string, active: boolean) =>
+    cameraManager.reportPreviewOwnership(cameraId, stationId, active)
+  )
+
   // Gathers every independent camera-detection source (ffmpeg/DirectShow,
   // Windows PnP) plus current station assignments and recent logs in one
   // call, for Settings -> Diagnostics. Chromium's own device list can only
@@ -111,9 +117,16 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle(IPC.diagnosticsTestRecording, (_e, cameraId: string, micName: string | null) =>
-    recordingEngine.testRecording(cameraId, micName)
-  )
+  ipcMain.handle(IPC.diagnosticsTestRecording, async (_e, cameraId: string, micName: string | null) => {
+    if (cameraManager.getOwner(cameraId) === 'ffmpeg') {
+      return {
+        success: false,
+        error: 'กล้องนี้กำลังถูกใช้บันทึกวิดีโอของสถานีอยู่ - ไม่สามารถทดสอบได้ในขณะนี้',
+        ffmpegCommand: ''
+      }
+    }
+    return cameraManager.withExclusiveAccess(cameraId, 'diagnostics', () => recordingEngine.testRecording(cameraId, micName))
+  })
 
   ipcMain.handle(IPC.diagnosticsExport, async (_e, text: string) => {
     const result = await dialog.showSaveDialog({
@@ -210,6 +223,8 @@ export function registerIpcHandlers(): void {
   stationManager.on('saveLocationStatus', (status) => broadcast(IPC.configOnSaveLocationStatus, status))
   stationManager.on('validationChanged', (issues) => broadcast(IPC.stationOnValidationChanged, issues))
   cameraManager.on('changed', (payload) => broadcast(IPC.cameraOnListChanged, payload))
+  cameraManager.on('previewReleaseRequested', (payload) => broadcast(IPC.cameraOnReleaseForRecording, payload))
+  cameraManager.on('recordingReleased', (payload) => broadcast(IPC.cameraOnReacquireAfterRecording, payload))
   scannerManager.on('changed', (devices) => broadcast(IPC.scannersOnListChanged, devices))
   rawInputService.on('keydown', (payload) => broadcast(IPC.scannersOnRawKeydown, payload))
   logger.on('entry', (entry) => broadcast(IPC.systemOnLogEntry, entry))

@@ -57,6 +57,7 @@ function StationCardImpl({ station, state, overlayConfig, cameras, isActive, hot
       <CameraPreview
         cameraId={resolvedCameraId}
         cameras={cameras}
+        stationId={station.id}
         configured={hasCameraConfigured}
         overlay={hasCameraConfigured ? <OverlayPreview config={overlayConfig} data={overlayData} /> : undefined}
       >

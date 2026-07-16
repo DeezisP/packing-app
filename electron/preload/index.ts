@@ -90,7 +90,24 @@ const api = {
       }
     },
     getCapabilities: (cameraId: string): Promise<CameraCapabilityOption[]> =>
-      ipcRenderer.invoke(IPC.camerasGetCapabilities, cameraId)
+      ipcRenderer.invoke(IPC.camerasGetCapabilities, cameraId),
+    getOwner: (cameraId: string): Promise<'preview' | 'ffmpeg' | null> => ipcRenderer.invoke(IPC.camerasGetOwner, cameraId),
+    reportPreviewOwnership: (cameraId: string, stationId: string, active: boolean): Promise<void> =>
+      ipcRenderer.invoke(IPC.cameraReportPreviewOwnership, cameraId, stationId, active),
+    onReleaseForRecording: (cb: (payload: { cameraId: string; stationId: string }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, payload: { cameraId: string; stationId: string }): void => cb(payload)
+      ipcRenderer.on(IPC.cameraOnReleaseForRecording, listener)
+      return (): void => {
+        ipcRenderer.removeListener(IPC.cameraOnReleaseForRecording, listener)
+      }
+    },
+    onReacquireAfterRecording: (cb: (payload: { cameraId: string; stationId: string }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, payload: { cameraId: string; stationId: string }): void => cb(payload)
+      ipcRenderer.on(IPC.cameraOnReacquireAfterRecording, listener)
+      return (): void => {
+        ipcRenderer.removeListener(IPC.cameraOnReacquireAfterRecording, listener)
+      }
+    }
   },
   diagnostics: {
     get: (): Promise<DiagnosticsSnapshot> => ipcRenderer.invoke(IPC.diagnosticsGet),

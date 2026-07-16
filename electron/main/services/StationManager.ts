@@ -28,6 +28,12 @@ const SAVE_LOCATION_HEALTH_INTERVAL_MS = 10000
 interface StationRuntime extends StationRuntimeState {
   dbId: number | null
   videoPath: string | null
+  /** CameraDevice.id ffmpeg actually opened for the in-progress recording -
+   *  recorded separately from the station's *configured* camera because that
+   *  config could theoretically change mid-recording; ownership must be
+   *  released for the exact device that was claimed, not whatever the
+   *  station happens to point at right now. Null whenever not recording. */
+  activeCameraId: string | null
 }
 
 /** The barcode-driven state machine described in the spec:
@@ -58,7 +64,8 @@ class StationManager extends EventEmitter {
         elapsedSeconds: 0,
         lastError: null,
         dbId: null,
-        videoPath: null
+        videoPath: null,
+        activeCameraId: null
       })
     }
 
@@ -66,7 +73,12 @@ class StationManager extends EventEmitter {
       const state = this.states.get(stationId)
       if (!state) return
       if (state.dbId) database.markError(state.dbId, message)
-      this.setState(stationId, { status: 'error', lastError: message })
+      // ffmpeg is already gone at this point (this fires from its own
+      // process 'exit' handler), so the camera is genuinely free - release
+      // ownership and let the preview reclaim it instead of leaving the
+      // camera stuck marked as ffmpeg-owned forever.
+      if (state.activeCameraId) cameraManager.releaseFromRecording(state.activeCameraId, stationId)
+      this.setState(stationId, { status: 'error', lastError: message, activeCameraId: null })
       logger.error('Recording stopped unexpectedly', { stationId, message })
     })
 
@@ -217,7 +229,8 @@ class StationManager extends EventEmitter {
           elapsedSeconds: 0,
           lastError: null,
           dbId: null,
-          videoPath: null
+          videoPath: null,
+          activeCameraId: null
         })
         this.emit('stateChanged', this.publicState(station.id))
       } else {
@@ -272,6 +285,7 @@ class StationManager extends EventEmitter {
     if (!state || state.status !== 'recording') return
     overlayService.stop(stationId)
     await recordingEngine.stop(stationId)
+    if (state.activeCameraId) cameraManager.releaseFromRecording(state.activeCameraId, stationId)
     if (state.dbId && state.videoPath) {
       const thumb = await recordingEngine.generateThumbnail(state.videoPath)
       database.completeRecording(state.dbId, thumb)
@@ -284,7 +298,8 @@ class StationManager extends EventEmitter {
       startedAt: null,
       elapsedSeconds: 0,
       dbId: null,
-      videoPath: null
+      videoPath: null,
+      activeCameraId: null
     })
   }
 
@@ -428,6 +443,22 @@ class StationManager extends EventEmitter {
         }
       : null
 
+    // The renderer's own getUserMedia preview and ffmpeg's dshow capture can
+    // never both hold this physical camera open - a UVC driver only grants
+    // one capture session at a time (see CameraManager). Ask the preview to
+    // let go and wait for it to actually confirm before ffmpeg ever tries to
+    // open the device, instead of racing it and hitting "Camera is
+    // unavailable or already in use".
+    const alreadyOpenByPreview = cameraManager.getOwner(camera.id) === 'preview'
+    logger.info('Start Recording', {
+      stationId,
+      cameraId: camera.id,
+      alreadyOpen: alreadyOpenByPreview,
+      reuseExistingCapture: false
+    })
+    await cameraManager.requestPreviewRelease(camera.id, stationId)
+    cameraManager.claimForRecording(camera.id, stationId)
+
     try {
       const result = await recordingEngine.start(station, camera.id, barcode, saveLocation, overlay)
       const dbId = database.insertRecordingStart({
@@ -448,14 +479,16 @@ class StationManager extends EventEmitter {
         elapsedSeconds: 0,
         lastError: null,
         dbId,
-        videoPath: result.videoPath
+        videoPath: result.videoPath,
+        activeCameraId: camera.id
       })
-      logger.info('Recording started', { stationId, barcode, camera: cameraDisplayName, cameraId: camera.id })
+      logger.info('Recording started', { stationId, barcode, camera: cameraDisplayName, cameraId: camera.id, success: true })
     } catch (err) {
       overlayService.stop(stationId)
+      cameraManager.releaseFromRecording(camera.id, stationId)
       const message = (err as Error).message
       this.setState(stationId, { status: 'error', lastError: message })
-      logger.error('Failed to start recording', { stationId, barcode, error: message })
+      logger.error('Failed to start recording - exact ffmpeg error output', { stationId, barcode, error: message })
     }
   }
 
@@ -465,6 +498,10 @@ class StationManager extends EventEmitter {
 
     overlayService.stop(stationId)
     await recordingEngine.stop(stationId)
+    // Only now - after ffmpeg has actually exited, not merely been asked to
+    // stop - is the camera genuinely free. Releasing any earlier would let
+    // the preview race a still-shutting-down ffmpeg process for the device.
+    if (state.activeCameraId) cameraManager.releaseFromRecording(state.activeCameraId, stationId)
 
     let thumbnailPath: string | null = null
     if (state.videoPath) {
@@ -484,7 +521,8 @@ class StationManager extends EventEmitter {
       elapsedSeconds: 0,
       dbId: null,
       videoPath: null,
-      lastError: null
+      lastError: null,
+      activeCameraId: null
     })
   }
 

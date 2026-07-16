@@ -11,6 +11,10 @@ interface CameraPreviewProps {
   /** The current full camera list - needed to disambiguate identical-name
    *  devices when matching the browser's own getUserMedia device list. */
   cameras: CameraDevice[]
+  /** Ownership label reported to the main process (see CameraManager) so it
+   *  can log and coordinate who currently holds this camera - a station id,
+   *  or a synthetic id like 'diagnostics' for a preview not tied to one. */
+  stationId: string
   /** Whether a camera is assigned in config at all, independent of live
    *  connectivity - drives the "no camera assigned" placeholder. Defaults to
    *  Boolean(cameraId), which is correct when the caller already knows the
@@ -29,13 +33,14 @@ interface CameraPreviewProps {
 export function CameraPreview({
   cameraId,
   cameras,
+  stationId,
   configured,
   overlay,
   placeholderText,
   className,
   children
 }: CameraPreviewProps): JSX.Element {
-  const { videoRef, error } = useCameraPreview(cameraId, cameras)
+  const { videoRef, error, releasedForRecording } = useCameraPreview(cameraId, cameras, stationId)
   const isConfigured = configured ?? Boolean(cameraId)
 
   return (
@@ -47,7 +52,12 @@ export function CameraPreview({
           {placeholderText ?? strings.stationCard.noCameraAssigned}
         </div>
       )}
-      {cameraId && error && (
+      {cameraId && releasedForRecording && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/70 text-slate-300 text-sm px-4 text-center">
+          {strings.camera.previewPausedForRecording}
+        </div>
+      )}
+      {cameraId && !releasedForRecording && error && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/70 text-warn-500 text-sm px-4 text-center">
           {strings.camera.previewUnavailable(error)}
         </div>

@@ -35,7 +35,7 @@ export function TestCameraModal({ camera, cameras, onClose }: Props): JSX.Elemen
             {strings.common.close}
           </button>
         </div>
-        <CameraPreview cameraId={camera.id} cameras={cameras} configured />
+        <CameraPreview cameraId={camera.id} cameras={cameras} stationId="diagnostics" configured />
       </motion.div>
     </motion.div>
   )

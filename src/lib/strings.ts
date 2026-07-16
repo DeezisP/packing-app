@@ -99,7 +99,8 @@ export const strings = {
   },
 
   camera: {
-    previewUnavailable: (err: string): string => `พรีวิวใช้งานไม่ได้: ${err}`
+    previewUnavailable: (err: string): string => `พรีวิวใช้งานไม่ได้: ${err}`,
+    previewPausedForRecording: 'กำลังบันทึกวิดีโอ - พรีวิวจะกลับมาอีกครั้งเมื่อหยุดบันทึก'
   },
 
   videoPlayer: {
