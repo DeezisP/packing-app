@@ -27,11 +27,14 @@ export const IPC = {
   camerasList: 'cameras:list',
   cameraOnListChanged: 'cameras:onListChanged',
   camerasGetCapabilities: 'cameras:getCapabilities',
-  camerasGetOwner: 'cameras:getOwner',
-  cameraReportPreviewOwnership: 'cameras:reportPreviewOwnership',
-  cameraOnReleaseForRecording: 'cameras:onReleaseForRecording',
-  cameraOnReacquireAfterRecording: 'cameras:onReacquireAfterRecording',
-  cameraOnPreviewFrame: 'cameras:onPreviewFrame',
+
+  // Recording capture (renderer owns the live camera continuously; this is
+  // just the chunk pipe from its MediaRecorder to the main process - see
+  // CaptureIngestService/useRecordingCapture)
+  recordingBeginCapture: 'recording:beginCapture',
+  recordingEndCapture: 'recording:endCapture',
+  recordingChunk: 'recording:chunk',
+  recordingCaptureError: 'recording:captureError',
 
   // Diagnostics
   diagnosticsGet: 'diagnostics:get',

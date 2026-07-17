@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { labelMatchesDeviceName } from '../lib/deviceMatching'
 import type { CameraDevice } from '../../electron/shared/types'
 
 /** Chromium redacts every device's `label` (and gives every device the same
@@ -39,67 +40,51 @@ async function ensureDeviceLabelsUnlocked(): Promise<void> {
   labelsUnlocked = true
 }
 
-/** Chromium's camera label is not always exactly the DirectShow friendly
- *  name ffmpeg reports: once it can see there are multiple devices sharing a
- *  name, it appends a `" (vendorId:productId)"` suffix to help JS-side
- *  disambiguation, e.g. ffmpeg's `"EMEET SmartCam S600"` shows up from
- *  Chromium as `"EMEET SmartCam S600 (328f:00e6)"`. A strict `===` against
- *  ffmpeg's plain name therefore matches nothing at all (confirmed via this
- *  app's own diagnostic logging: chromiumMatchCount stayed 0 even after
- *  labels were unlocked) - and both identical-model cameras get the *same*
- *  suffix (same vendor/product id), so it doesn't finish the disambiguation
- *  by itself either. Matching on a name-boundary prefix handles both: it
- *  still requires the base name to match exactly (not just contain it
- *  anywhere), so it can't accidentally match an unrelated device whose name
- *  happens to start the same way. */
-function labelMatchesCameraName(label: string, name: string): boolean {
-  return label === name || label.startsWith(`${name} (`)
-}
-
 /** Attaches a live getUserMedia preview for a specific camera, identified by
  *  its unique `id` (ffmpeg's DirectShow device path) rather than its
  *  friendly name - two identical camera models report the exact same
  *  `navigator.mediaDevices` label, so matching by label alone can't tell
  *  them apart.
  *
- *  Chromium's device list and ffmpeg's dshow list are two separate id
- *  namespaces with no shared key, so for a genuine duplicate-name pair this
- *  falls back to a best-effort correlation: both APIs enumerate USB cameras
- *  of the same model in the same relative order in practice, so "the Nth
- *  device named X in ffmpeg's list" is matched to "the Nth device named X"
- *  in the browser's list. This is not a documented guarantee, only an
- *  observed convention - but it only affects which of two *identical-model*
- *  live previews is shown; actual recording is always exact regardless,
- *  since ffmpeg opens the unique device path directly (see RecordingEngine). */
-/** `stationId` is only ever used as an ownership label (see CameraManager /
- *  registerIpcHandlers) - a synthetic id like `'diagnostics'` is fine for a
- *  preview that isn't tied to a packing station. */
+ *  This is the *only* thing that ever opens the physical camera, for as long
+ *  as this hook stays mounted - recording captures this same MediaStream
+ *  instead of competing for the device (see CaptureIngestService's class doc
+ *  comment and useRecordingCapture), so nothing here needs to react to
+ *  recording state at all; the stream is attached once and stays attached.
+ *
+ *  Chromium's device list and the DirectShow list this app's cameraId values
+ *  come from are two separate id namespaces with no shared key, so for a
+ *  genuine duplicate-name pair this falls back to a best-effort correlation:
+ *  both APIs enumerate USB cameras of the same model in the same relative
+ *  order in practice, so "the Nth device named X in the configured list" is
+ *  matched to "the Nth device named X" in the browser's list. This is not a
+ *  documented guarantee, only an observed convention - but it only affects
+ *  which of two *identical-model* live previews is shown; the recording this
+ *  preview feeds is always the exact physical device the operator is looking
+ *  at, since it's the same MediaStream either way. */
 export function useCameraPreview(
   cameraId: string | null,
   cameras: CameraDevice[],
-  stationId: string
+  externalVideoRef?: React.RefObject<HTMLVideoElement>,
+  /** Requested as `ideal` (never `exact`) getUserMedia constraints - a
+   *  camera that can't hit this exact mode still attaches at its closest
+   *  supported one instead of failing outright. Recording now reads frames
+   *  directly from this same stream (see useRecordingCapture), so unlike
+   *  before - when an independent ffmpeg process forced this resolution/fps
+   *  on its own, completely decoupled from whatever the preview happened to
+   *  be showing - the preview itself must now request the station's
+   *  configured quality preset for the no-overlay capture path to actually
+   *  produce that resolution/fps. Omitted for a preview not tied to a
+   *  specific station's preset (e.g. TestCameraModal), which attaches at
+   *  the camera's own default mode exactly as before. */
+  preset?: { width: number; height: number; fps: number }
 ): {
   videoRef: React.RefObject<HTMLVideoElement>
   error: string | null
-  /** True while this preview has deliberately let go of the camera because a
-   *  recording is using it - distinct from `error`, since this isn't a
-   *  failure, just the ffmpeg/recording handoff (see CameraManager's
-   *  ownership doc comment). getUserMedia resumes automatically the moment
-   *  recording releases the camera back. While this is true, `liveFrameUrl`
-   *  carries a genuinely live (if low-res/low-fps) feed streamed from the
-   *  recording's own ffmpeg process - see PreviewStreamService. */
-  releasedForRecording: boolean
-  /** Object URL for the most recent live-preview JPEG frame received while
-   *  `releasedForRecording` is true - null until the first frame arrives
-   *  (ffmpeg needs a moment to start up) and whenever not recording. Caller
-   *  must not hold onto this across renders; a new URL replaces (and
-   *  revokes) the previous one on every frame. */
-  liveFrameUrl: string | null
 } {
-  const videoRef = useRef<HTMLVideoElement>(null)
+  const ownVideoRef = useRef<HTMLVideoElement>(null)
+  const videoRef = externalVideoRef ?? ownVideoRef
   const [error, setError] = useState<string | null>(null)
-  const [releasedForRecording, setReleasedForRecording] = useState(false)
-  const [liveFrameUrl, setLiveFrameUrl] = useState<string | null>(null)
 
   const target = cameraId ? (cameras.find((c) => c.id === cameraId) ?? null) : null
   const occurrence = target
@@ -109,75 +94,8 @@ export function useCameraPreview(
         .findIndex((c) => c.id === target.id)
     : -1
 
-  // Listens for the main process asking this camera's preview to let go
-  // (about to record) or confirming it's safe to resume (recording stopped).
-  // Filtered to this hook's own camera id so unrelated stations' handoffs
-  // are ignored.
-  useEffect(() => {
-    if (!target) return
-    const targetId = target.id
-    let cancelled = false
-    // Tracks the currently-shown frame's object URL outside React state so
-    // it can be revoked deterministically (on the next frame, on reacquire,
-    // and on unmount) without racing setState's own batching.
-    let currentFrameUrl: string | null = null
-
-    const clearFrame = (): void => {
-      if (currentFrameUrl) {
-        URL.revokeObjectURL(currentFrameUrl)
-        currentFrameUrl = null
-      }
-      setLiveFrameUrl(null)
-    }
-
-    // Covers the reverse race from the release-broadcast handshake below:
-    // this component could mount (or remount) while ffmpeg already owns the
-    // camera - e.g. right at app startup, or a very fast scan right after
-    // the dashboard renders - in which case there was no release broadcast
-    // to react to, since the camera was never the preview's to begin with.
-    window.electronAPI.cameras.getOwner(targetId).then((owner) => {
-      if (!cancelled && owner === 'ffmpeg') setReleasedForRecording(true)
-    })
-
-    const offRelease = window.electronAPI.cameras.onReleaseForRecording((payload) => {
-      if (payload.cameraId === targetId) setReleasedForRecording(true)
-    })
-    const offReacquire = window.electronAPI.cameras.onReacquireAfterRecording((payload) => {
-      if (payload.cameraId === targetId) {
-        setReleasedForRecording(false)
-        clearFrame()
-      }
-    })
-    const offFrame = window.electronAPI.cameras.onPreviewFrame((payload) => {
-      if (payload.cameraId !== targetId) return
-      // Electron's IPC structured clone can hand back a Uint8Array typed
-      // over a SharedArrayBuffer-compatible backing, which Blob's type
-      // (ArrayBufferView<ArrayBuffer> only) rejects - Uint8Array.from copies
-      // into a fresh plain-ArrayBuffer-backed view, which is cheap at this
-      // frame size (see PreviewStreamService/RecordingEngine's preview
-      // resolution/fps).
-      const url = URL.createObjectURL(new Blob([Uint8Array.from(payload.jpeg)], { type: 'image/jpeg' }))
-      if (currentFrameUrl) URL.revokeObjectURL(currentFrameUrl)
-      currentFrameUrl = url
-      setLiveFrameUrl(url)
-    })
-    return () => {
-      cancelled = true
-      offRelease()
-      offReacquire()
-      offFrame()
-      clearFrame()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target?.id])
-
   useEffect(() => {
     if (!target) {
-      setError(null)
-      return
-    }
-
-    if (releasedForRecording) {
       setError(null)
       return
     }
@@ -191,7 +109,7 @@ export function useCameraPreview(
         if (cancelled) return
 
         const devices = await navigator.mediaDevices.enumerateDevices()
-        const matches = devices.filter((d) => d.kind === 'videoinput' && labelMatchesCameraName(d.label, target!.name))
+        const matches = devices.filter((d) => d.kind === 'videoinput' && labelMatchesDeviceName(d.label, target!.name))
         const match = matches[occurrence] ?? matches[0]
 
         window.electronAPI.system.log('info', 'Preview stage: attaching camera', {
@@ -203,8 +121,14 @@ export function useCameraPreview(
           chromiumAllDeviceIds: matches.map((m) => m.deviceId)
         })
 
+        const videoConstraints: MediaTrackConstraints = {
+          ...(match ? { deviceId: { exact: match.deviceId } } : {}),
+          ...(preset
+            ? { width: { ideal: preset.width }, height: { ideal: preset.height }, frameRate: { ideal: preset.fps } }
+            : {})
+        }
         stream = await navigator.mediaDevices.getUserMedia({
-          video: match ? { deviceId: { exact: match.deviceId } } : true
+          video: Object.keys(videoConstraints).length > 0 ? videoConstraints : true
         })
 
         if (cancelled) {
@@ -215,7 +139,6 @@ export function useCameraPreview(
           videoRef.current.srcObject = stream
         }
         setError(null)
-        window.electronAPI.cameras.reportPreviewOwnership(target!.id, stationId, true)
       } catch (err) {
         const message = (err as Error).message
         window.electronAPI.system.log('warn', 'Preview stage: attach failed', {
@@ -233,11 +156,14 @@ export function useCameraPreview(
       cancelled = true
       if (stream) {
         stream.getTracks().forEach((t) => t.stop())
-        window.electronAPI.cameras.reportPreviewOwnership(target!.id, stationId, false)
       }
     }
+    // Depends on preset's primitive fields rather than the object reference,
+    // so a caller passing a fresh `{ width, height, fps }` literal every
+    // render (e.g. derived from QUALITY_PRESETS each time) doesn't
+    // needlessly re-attach the camera.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target?.id, occurrence, releasedForRecording, stationId])
+  }, [target?.id, occurrence, preset?.width, preset?.height, preset?.fps])
 
-  return { videoRef, error, releasedForRecording, liveFrameUrl }
+  return { videoRef, error }
 }

@@ -228,9 +228,10 @@ export interface IdentifiedScanner {
 export type OverlayPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
 
 /** Configures the text overlay burned directly into recorded video frames
- *  (via ffmpeg's drawtext filter) - see OverlayService/RecordingEngine in
- *  the main process, and OverlayPreview in the renderer for the WYSIWYG
- *  live-preview that mirrors this same config. */
+ *  (via canvas compositing during live capture - see canvasOverlay.ts/
+ *  useRecordingCapture.ts in the renderer), and OverlayPreview in the
+ *  renderer for the separate WYSIWYG live-preview that mirrors this same
+ *  config as a CSS layer. */
 export interface OverlayConfig {
   enabled: boolean
   showBarcode: boolean
@@ -327,15 +328,30 @@ export function buildOverlayLines(config: OverlayConfig, data: OverlayFieldData)
   return lines
 }
 
+function pad(n: number): string {
+  return String(n).padStart(2, '0')
+}
+
 /** Always HH:MM:SS (never omits the hours segment like some other duration
  *  formatters in this app do) - matches the overlay spec's example exactly,
  *  and is shared so the burned-in video and the live preview never drift. */
 export function formatHms(totalSeconds: number): string {
-  const pad = (n: number): string => String(n).padStart(2, '0')
   const h = Math.floor(totalSeconds / 3600)
   const m = Math.floor((totalSeconds % 3600) / 60)
   const s = Math.floor(totalSeconds % 60)
   return `${pad(h)}:${pad(m)}:${pad(s)}`
+}
+
+/** Shared with formatHms's own reasoning: both the on-screen WYSIWYG overlay
+ *  (useOverlayFieldData) and the actual burned-in recording (canvas
+ *  compositing, see useRecordingCapture/canvasOverlay) format the current
+ *  date/time this same way, so they can never drift from each other. */
+export function formatDateLocal(d: Date): string {
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+export function formatTimeLocal(d: Date): string {
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
 export type RecordingStatus = 'recording' | 'completed' | 'interrupted' | 'error'
@@ -375,12 +391,15 @@ export interface SearchFilters {
 
 export interface StationRuntimeState {
   stationId: string
-  /** 'processing' covers the window between ffmpeg actually exiting (camera
-   *  already handed back to the live preview) and the recording being fully
-   *  usable (decode verification, thumbnail extraction, DB/metadata write,
-   *  warehouse API enqueue all still running) - see StationManager.stopRecording.
-   *  Kept distinct from 'recording' so the dashboard stops showing a frozen
-   *  elapsed timer for work the camera itself is no longer part of. */
+  /** 'processing' covers the window between the renderer's live capture
+   *  ending and the recording being fully usable (webm->mp4 transcode,
+   *  decode verification, thumbnail extraction, DB/metadata write, warehouse
+   *  API enqueue all still running) - see StationManager.stopRecording. Kept
+   *  distinct from 'recording' so the dashboard stops showing a frozen
+   *  elapsed timer for work that's no longer live. The camera's live preview
+   *  is never affected by any of this - see CaptureIngestService/
+   *  useRecordingCapture, the getUserMedia stream is never touched by
+   *  recording start/stop at all. */
   status: 'idle' | 'recording' | 'processing' | 'error'
   barcode: string | null
   cameraName: string | null
@@ -552,4 +571,51 @@ export interface ApiQueueStatus {
   pending: number
   lastError: string | null
   lastSuccessAt: string | null
+}
+
+/** Main -> renderer: tells the station's already-live camera preview (see
+ *  useRecordingCapture) to start capturing its own already-open MediaStream
+ *  instead of opening a new/competing one - the camera itself is never
+ *  reopened or renegotiated. Keyed by `sessionId`, not just `stationId`,
+ *  because a new recording can legitimately start for a station whose
+ *  previous recording is still `status: 'processing'` (finalizing) - see
+ *  StationManager.handleScan/CaptureIngestService's own doc comments. */
+export interface CaptureBeginPayload {
+  sessionId: string
+  stationId: string
+  cameraId: string
+  micName: string | null
+  preset: { width: number; height: number; fps: number; bitrateKbps: number }
+  /** Null when the overlay is disabled - the renderer then records the raw
+   *  camera track directly instead of compositing through a canvas. */
+  overlay: { config: OverlayConfig; staticData: { barcode: string; station: string; camera: string } } | null
+  startedAt: string
+}
+
+/** Main -> renderer: stop capturing this session. The renderer keeps the
+ *  live preview running regardless - this only stops the MediaRecorder. */
+export interface CaptureEndPayload {
+  sessionId: string
+  stationId: string
+}
+
+/** Renderer -> main: one chunk of the live MediaRecorder capture. `final:
+ *  true` is sent once, as an empty sentinel, only after MediaRecorder's
+ *  `onstop` event fires (which the spec guarantees happens after the last
+ *  real `dataavailable`) - see CaptureIngestService.writeChunk. */
+export interface CaptureChunkPayload {
+  sessionId: string
+  seq: number
+  data: ArrayBuffer
+  final: boolean
+}
+
+/** Renderer -> main: the capture session failed to start or continue (mic
+ *  device missing, unsupported MediaRecorder mimeType, camera track ended
+ *  unexpectedly) - mirrors the old ffmpeg `unexpectedExit` signal so
+ *  StationManager's error handling stays the same shape. */
+export interface CaptureErrorPayload {
+  sessionId: string
+  stationId: string
+  message: string
 }

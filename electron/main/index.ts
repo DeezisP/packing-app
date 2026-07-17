@@ -11,7 +11,6 @@ import { cameraManager } from './services/CameraManager'
 import { scannerManager } from './services/ScannerManager'
 import { rawInputService } from './services/RawInputService'
 import { stationManager } from './services/StationManager'
-import { recordingEngine } from './services/RecordingEngine'
 import { updateService } from './services/UpdateService'
 import { apiQueueService } from './services/ApiQueueService'
 
@@ -68,6 +67,21 @@ if (!singleInstanceLock) {
     // only happen after the window exists - unlike the other services above.
     rawInputService.init(mainWindow)
 
+    // The live camera capture (and, mid-recording, its encode) now lives in
+    // the renderer process (see CaptureIngestService's class doc comment) -
+    // a renderer crash can therefore actually interrupt an in-progress
+    // recording, which was never possible when ffmpeg owned it as an
+    // independent OS process. Salvage whatever was captured so far instead
+    // of silently losing it, then bring the app back instead of leaving it
+    // dead - and re-register Raw Input against the new window, since that
+    // registration is tied to a specific native window handle.
+    mainWindow.webContents.on('render-process-gone', (_event, details) => {
+      logger.error('Renderer process gone', { reason: details.reason, exitCode: details.exitCode })
+      stationManager.handleRendererGone()
+      const recreated = createMainWindow()
+      rawInputService.init(recreated)
+    })
+
     app.on('browser-window-created', (_e, window) => {
       optimizer.watchWindowShortcuts(window)
     })
@@ -84,7 +98,6 @@ if (!singleInstanceLock) {
   app.on('before-quit', () => {
     logger.info('Application shutting down')
     stationManager.shutdown()
-    recordingEngine.killAll()
     apiQueueService.stop()
     database.close()
   })

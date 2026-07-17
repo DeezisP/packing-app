@@ -102,8 +102,7 @@ export const strings = {
   },
 
   camera: {
-    previewUnavailable: (err: string): string => `พรีวิวใช้งานไม่ได้: ${err}`,
-    connectingLiveView: 'กำลังเชื่อมต่อภาพขณะบันทึก...'
+    previewUnavailable: (err: string): string => `พรีวิวใช้งานไม่ได้: ${err}`
   },
 
   videoPlayer: {
@@ -309,7 +308,7 @@ export const strings = {
     previewBackendLabel: 'Backend สำหรับพรีวิว:',
     previewBackendValue: 'Chromium MediaDevices (getUserMedia)',
     recordingBackendLabel: 'Backend สำหรับบันทึก:',
-    recordingBackendValue: 'FFmpeg / DirectShow',
+    recordingBackendValue: 'Chromium MediaRecorder (แปลงไฟล์เป็น MP4 ด้วย FFmpeg หลังบันทึกเสร็จ)',
     generatedFfmpegCommand: 'คำสั่ง FFmpeg ที่ใช้จริง',
     stationAssignments: 'รหัสเฉพาะภายในและการกำหนดให้สถานี',
     internalId: 'รหัสเฉพาะภายใน',

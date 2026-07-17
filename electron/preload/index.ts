@@ -21,7 +21,11 @@ import type {
   ApiQueueStatus,
   WarehouseApiConfig,
   WarehouseApiTestResult,
-  PlaybackPreflightResult
+  PlaybackPreflightResult,
+  CaptureBeginPayload,
+  CaptureEndPayload,
+  CaptureChunkPayload,
+  CaptureErrorPayload
 } from '@shared/types'
 
 const api = {
@@ -94,33 +98,32 @@ const api = {
       }
     },
     getCapabilities: (cameraId: string): Promise<CameraCapabilityOption[]> =>
-      ipcRenderer.invoke(IPC.camerasGetCapabilities, cameraId),
-    getOwner: (cameraId: string): Promise<'preview' | 'ffmpeg' | null> => ipcRenderer.invoke(IPC.camerasGetOwner, cameraId),
-    reportPreviewOwnership: (cameraId: string, stationId: string, active: boolean): Promise<void> =>
-      ipcRenderer.invoke(IPC.cameraReportPreviewOwnership, cameraId, stationId, active),
-    onReleaseForRecording: (cb: (payload: { cameraId: string; stationId: string }) => void) => {
-      const listener = (_e: Electron.IpcRendererEvent, payload: { cameraId: string; stationId: string }): void => cb(payload)
-      ipcRenderer.on(IPC.cameraOnReleaseForRecording, listener)
+      ipcRenderer.invoke(IPC.camerasGetCapabilities, cameraId)
+  },
+  /** The live camera preview is never touched by any of this - it's purely
+   *  the chunk pipe from the renderer's own MediaRecorder capture (see
+   *  useRecordingCapture.ts) back to the main process. See
+   *  CaptureIngestService for the receiving end. */
+  capture: {
+    onBeginCapture: (cb: (payload: CaptureBeginPayload) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, payload: CaptureBeginPayload): void => cb(payload)
+      ipcRenderer.on(IPC.recordingBeginCapture, listener)
       return (): void => {
-        ipcRenderer.removeListener(IPC.cameraOnReleaseForRecording, listener)
+        ipcRenderer.removeListener(IPC.recordingBeginCapture, listener)
       }
     },
-    onReacquireAfterRecording: (cb: (payload: { cameraId: string; stationId: string }) => void) => {
-      const listener = (_e: Electron.IpcRendererEvent, payload: { cameraId: string; stationId: string }): void => cb(payload)
-      ipcRenderer.on(IPC.cameraOnReacquireAfterRecording, listener)
+    onEndCapture: (cb: (payload: CaptureEndPayload) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, payload: CaptureEndPayload): void => cb(payload)
+      ipcRenderer.on(IPC.recordingEndCapture, listener)
       return (): void => {
-        ipcRenderer.removeListener(IPC.cameraOnReacquireAfterRecording, listener)
+        ipcRenderer.removeListener(IPC.recordingEndCapture, listener)
       }
     },
-    onPreviewFrame: (cb: (payload: { stationId: string; cameraId: string; jpeg: Uint8Array }) => void) => {
-      const listener = (
-        _e: Electron.IpcRendererEvent,
-        payload: { stationId: string; cameraId: string; jpeg: Uint8Array }
-      ): void => cb(payload)
-      ipcRenderer.on(IPC.cameraOnPreviewFrame, listener)
-      return (): void => {
-        ipcRenderer.removeListener(IPC.cameraOnPreviewFrame, listener)
-      }
+    sendChunk: (payload: CaptureChunkPayload): void => {
+      ipcRenderer.send(IPC.recordingChunk, payload)
+    },
+    reportError: (payload: CaptureErrorPayload): void => {
+      ipcRenderer.send(IPC.recordingCaptureError, payload)
     }
   },
   diagnostics: {

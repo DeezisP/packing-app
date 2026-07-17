@@ -1,17 +1,7 @@
 import { useEffect, useState } from 'react'
-import { formatHms } from '../../electron/shared/types'
+import { formatHms, formatDateLocal, formatTimeLocal } from '../../electron/shared/types'
 import { strings } from '../lib/strings'
 import type { StationConfig, StationRuntimeState, OverlayFieldData } from '../../electron/shared/types'
-
-function pad(n: number): string {
-  return String(n).padStart(2, '0')
-}
-function formatDateLocal(d: Date): string {
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
-function formatTimeLocal(d: Date): string {
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}
 
 const SAMPLE_BARCODE = 'ORD240715001'
 const SAMPLE_TIMER = '00:02:45'

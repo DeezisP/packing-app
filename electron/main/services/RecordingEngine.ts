@@ -1,211 +1,30 @@
-import { spawn, ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { EventEmitter } from 'node:events'
 import { resolveFfmpegPath } from './FfmpegLocator'
 import { logger } from './Logger'
-import { previewStreamService } from './PreviewStreamService'
-import { QUALITY_PRESETS, type StationConfig, type OverlayConfig } from '@shared/types'
 
-const SYSTEM_FONT_FILE = 'C:/Windows/Fonts/arial.ttf'
-
-/** Resolution/frame-rate/quality of the live-preview MJPEG side-channel -
- *  deliberately small and low-fps since it's only there for the operator to
- *  confirm framing/lighting while ffmpeg holds the camera, not to be a
- *  faithful copy of the actual recording. Keeping it cheap also keeps its
- *  encode cost negligible next to the main libx264 chain. */
-const PREVIEW_WIDTH = 480
-const PREVIEW_FPS = 8
-const PREVIEW_MJPEG_QUALITY = '5'
-
-interface ActiveRecording {
-  stationId: string
-  cameraDeviceId: string
-  process: ChildProcessWithoutNullStreams
-  outputPath: string
-  stoppedByUs: boolean
-  stopResolvers: Array<() => void>
-}
-
-interface StartResult {
-  outputDir: string
-  videoPath: string
-  resolutionLabel: string
-}
-
-/** Owns one ffmpeg child process per packing station. Each station is fully
- *  independent - starting/stopping one never touches another's process. */
-class RecordingEngine extends EventEmitter {
-  private active = new Map<string, ActiveRecording>()
-
-  constructor() {
-    super()
-    // PreviewStreamService only knows a stationId (see its own doc comment);
-    // only RecordingEngine knows which camera that station is actually
-    // recording, so the cameraId the renderer needs to filter on is attached
-    // here rather than threaded through the pipe layer itself. Frames for a
-    // station with no active recording (a stale/late frame right at
-    // shutdown) are silently dropped.
-    previewStreamService.on('frame', ({ stationId, jpeg }: { stationId: string; jpeg: Uint8Array }) => {
-      const record = this.active.get(stationId)
-      if (!record) return
-      this.emit('previewFrame', { stationId, cameraId: record.cameraDeviceId, jpeg })
-    })
-  }
-
-  isRecording(stationId: string): boolean {
-    return this.active.has(stationId)
-  }
-
-  async start(
-    station: StationConfig,
-    cameraDeviceId: string,
-    barcode: string,
-    saveLocation: string,
-    overlay: { config: OverlayConfig; textFilePath: string } | null
-  ): Promise<StartResult> {
-    if (this.active.has(station.id)) {
-      throw new Error(`Station "${station.name}" is already recording`)
-    }
-
-    const outputDir = path.join(saveLocation, barcode)
-    fs.mkdirSync(outputDir, { recursive: true })
-    const videoPath = path.join(outputDir, 'packing.mp4')
-
-    const preset = QUALITY_PRESETS[station.qualityPreset]
-    const ffmpegPath = resolveFfmpegPath()
-    // Must already be listening before ffmpeg is spawned - see
-    // PreviewStreamService.start. Resolves null (no live preview, recording
-    // proceeds exactly as before) if the pipe server itself couldn't start.
-    const previewPipePath = await previewStreamService.start(station.id)
-    const args = buildRecordArgs({
-      cameraDeviceId,
-      micName: station.micName,
-      width: preset.width,
-      height: preset.height,
-      fps: station.fps,
-      bitrateKbps: station.bitrateKbps,
-      outputPath: videoPath,
-      overlay,
-      previewPipePath
-    })
-
-    logger.info('Recording start: launching ffmpeg', {
-      station: station.name,
-      barcode,
-      videoPath,
-      ffmpegPath,
-      livePreview: previewPipePath !== null,
-      commandLine: `${ffmpegPath} ${args.join(' ')}`
-    })
-
-    const child = spawn(ffmpegPath, args, { stdio: ['pipe', 'pipe', 'pipe'] })
-    const record: ActiveRecording = {
-      stationId: station.id,
-      cameraDeviceId,
-      process: child,
-      outputPath: videoPath,
-      stoppedByUs: false,
-      stopResolvers: []
-    }
-    this.active.set(station.id, record)
-
-    // Kept in full (not just a tail) for this recording's lifetime and
-    // logged in full on every exit path - "warning" loglevel is quiet in the
-    // common case but must never be silently discarded, since a warning here
-    // (e.g. dropped frames, a muxer complaint) is exactly the kind of signal
-    // that explains a file that turns out unplayable despite ffmpeg exiting
-    // with code 0.
-    let stderrLog = ''
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderrLog += chunk.toString()
-    })
-
-    child.on('exit', (code, signal) => {
-      this.active.delete(station.id)
-      previewStreamService.stop(station.id)
-      record.stopResolvers.forEach((resolve) => resolve())
-      if (!record.stoppedByUs) {
-        logger.error('ffmpeg exited unexpectedly during recording', {
-          station: station.name,
-          barcode,
-          videoPath,
-          code,
-          signal,
-          stderr: stderrLog.slice(-4000)
-        })
-        this.emit('unexpectedExit', { stationId: station.id, barcode, message: summarizeFfmpegError(stderrLog) })
-      } else {
-        logger.info('Recording stop: ffmpeg process exited', {
-          station: station.name,
-          barcode,
-          videoPath,
-          code,
-          signal,
-          forcedKill: signal === 'SIGKILL',
-          stderr: stderrLog.trim() ? stderrLog.slice(-4000) : '(empty)'
-        })
-      }
-    })
-
-    child.on('error', (err) => {
-      logger.error('ffmpeg failed to start', { station: station.name, error: err.message })
-      this.active.delete(station.id)
-      previewStreamService.stop(station.id)
-      this.emit('unexpectedExit', { stationId: station.id, barcode, message: err.message })
-    })
-
-    return { outputDir, videoPath, resolutionLabel: preset.label }
-  }
-
-  /** Gracefully stops ffmpeg by writing 'q' to stdin, which tells it to finish
-   *  the current frame and finalize the mp4's moov atom instead of leaving a
-   *  corrupt/unplayable file behind. Falls back to SIGKILL if it hangs. */
-  async stop(stationId: string): Promise<void> {
-    const record = this.active.get(stationId)
-    if (!record) return
-
-    record.stoppedByUs = true
-
-    const exited = new Promise<void>((resolve) => {
-      record.stopResolvers.push(resolve)
-    })
-
-    try {
-      record.process.stdin.write('q')
-    } catch {
-      // stdin may already be closed if ffmpeg crashed; force-kill below handles it.
-    }
-
-    const timeout = new Promise<void>((resolve) => setTimeout(resolve, 10000))
-    await Promise.race([exited, timeout])
-
-    if (this.active.has(stationId)) {
-      logger.warn('ffmpeg did not exit gracefully in time, force killing', { stationId })
-      record.process.kill('SIGKILL')
-      await exited
-    }
-  }
-
-  /** Force-kills without waiting - used on app quit so we never hang shutdown. */
-  killAll(): void {
-    for (const record of this.active.values()) {
-      record.stoppedByUs = true
-      record.process.kill('SIGKILL')
-    }
-    this.active.clear()
-  }
-
+/** File-based ffmpeg utilities used by the recording pipeline - all of them
+ *  operate on a static, already-complete input file (never a live camera
+ *  device), which is what makes them safe: there is no exclusive-device
+ *  contention to race, no live shutdown timing to get wrong. The live camera
+ *  capture itself is owned entirely by the renderer's getUserMedia/
+ *  MediaRecorder pipeline (see useRecordingCapture.ts) and streamed to
+ *  CaptureIngestService, which is also where the corresponding webm->mp4
+ *  transcode (the one ffmpeg step that still touches an in-progress
+ *  recording) lives - kept there rather than here since it's driven by
+ *  chunk-arrival/session state that service already owns. */
+class RecordingEngine {
   /** Diagnostics-only: opens one specific camera by its unique device id and
    *  records a few real seconds to a throwaway temp file, proving ffmpeg can
    *  actually acquire that exact physical device (not just that it appears
-   *  in a device list) without conflicting with any other camera. Entirely
-   *  isolated from `active`/`start`/`stop` - it never touches the station
-   *  recording workflow, so two of these (or one of these plus a real
-   *  station recording) can safely run concurrently against two different
-   *  device ids at once, which is exactly what needs verifying for two
-   *  identical webcams. */
+   *  in a device list) without conflicting with any other camera. Safe with
+   *  zero coordination: Dashboard and Settings are mutually-exclusive tabs
+   *  in the one renderer window, so by the time this can be triggered from
+   *  Settings, the Dashboard's own getUserMedia preview for this camera has
+   *  already been unmounted and its track stopped - see CameraManager's
+   *  class doc comment. */
   async testRecording(
     cameraDeviceId: string,
     micName: string | null,
@@ -325,10 +144,9 @@ class RecordingEngine extends EventEmitter {
 
   /** Fully decodes the recorded file (output discarded, errors surfaced) to
    *  confirm it's actually playable - not just present with a nonzero size.
-   *  A file force-killed mid-finalization (see stop()'s SIGKILL fallback)
-   *  can still exist on disk with real bytes in it despite having no moov
-   *  atom, which every player refuses to open - file size alone can't catch
-   *  that, only actually trying to decode it can. Reuses the already-bundled
+   *  A transcode that exits 0 doesn't guarantee a correct/complete output
+   *  any more than a live ffmpeg process exiting 0 used to - only actually
+   *  trying to decode it can catch that. Reuses the already-bundled
    *  ffmpeg.exe rather than adding an ffprobe dependency. */
   async verifyRecording(videoPath: string): Promise<{
     valid: boolean
@@ -389,135 +207,7 @@ class RecordingEngine extends EventEmitter {
   }
 }
 
-function buildRecordArgs(input: {
-  /** Either the DirectShow "Alternative name" device path (unambiguous even
-   *  when two cameras share a friendly name) or, for a driver that doesn't
-   *  report one, the friendly name itself - see CameraManager. ffmpeg's
-   *  dshow input accepts both forms identically as `video=<value>`. */
-  cameraDeviceId: string
-  micName: string | null
-  width: number
-  height: number
-  fps: number
-  bitrateKbps: number
-  outputPath: string
-  overlay: { config: OverlayConfig; textFilePath: string } | null
-  /** Named-pipe path from PreviewStreamService for a second, low-res MJPEG
-   *  output branch that gives the renderer a genuinely live feed while
-   *  ffmpeg holds the camera - null skips the branch entirely (e.g. the pipe
-   *  server failed to start), in which case the command below is
-   *  byte-for-byte what it always was: one input, one output. A first
-   *  attempt at this (a rotating image2 preview file) was tried and
-   *  reverted - see PreviewStreamService's doc comment for why a pipe avoids
-   *  that failure mode, and why a second *output* here (as opposed to a
-   *  second process touching the camera) can't race the primary recording
-   *  for the device. */
-  previewPipePath: string | null
-}): string[] {
-  const deviceSpec = input.micName
-    ? `video=${input.cameraDeviceId}:audio=${input.micName}`
-    : `video=${input.cameraDeviceId}`
-
-  const args = [
-    '-hide_banner',
-    '-loglevel',
-    'warning',
-    '-f',
-    'dshow',
-    '-video_size',
-    `${input.width}x${input.height}`,
-    '-framerate',
-    String(input.fps),
-    '-rtbufsize',
-    '512M',
-    '-i',
-    deviceSpec
-  ]
-
-  if (input.previewPipePath) {
-    // Splits the decoded camera feed into two independent chains from one
-    // input: the full-quality chain recorded exactly as before (overlay
-    // burned in first, if enabled), and a small/low-fps chain mjpeg-encoded
-    // straight to the live-preview pipe. Once -filter_complex is in use,
-    // stream selection is no longer automatic, so every stream going to
-    // every output (including the main chain's audio) must be -map'd
-    // explicitly below.
-    const recLabel = input.overlay?.config.enabled ? 'recin' : 'rec'
-    const filterParts = [`[0:v]split=2[${recLabel}][previn]`]
-    if (input.overlay?.config.enabled) {
-      filterParts.push(`[recin]${buildOverlayFilter(input.overlay.config, input.overlay.textFilePath)}[rec]`)
-    }
-    filterParts.push(`[previn]scale=${PREVIEW_WIDTH}:-2,fps=${PREVIEW_FPS}[prevout]`)
-    args.push('-filter_complex', filterParts.join(';'))
-    args.push('-map', '[rec]')
-    if (input.micName) args.push('-map', '0:a')
-  } else if (input.overlay?.config.enabled) {
-    args.push('-vf', buildOverlayFilter(input.overlay.config, input.overlay.textFilePath))
-  }
-
-  args.push('-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-b:v', `${input.bitrateKbps}k`)
-
-  if (input.micName) {
-    args.push('-c:a', 'aac', '-b:a', '128k')
-  } else {
-    args.push('-an')
-  }
-
-  args.push('-movflags', '+faststart', '-y', input.outputPath)
-
-  if (input.previewPipePath) {
-    args.push('-map', '[prevout]', '-c:v', 'mjpeg', '-q:v', PREVIEW_MJPEG_QUALITY, '-f', 'mjpeg', input.previewPipePath)
-  }
-
-  return args
-}
-
-/** ffmpeg's filtergraph value parser goes through two rounds of unescaping,
- *  so a literal colon (as in a Windows drive letter) needs to survive both -
- *  a single backslash is not enough and silently produces a "both text and
- *  text file provided" parse error. Forward slashes avoid needing to escape
- *  path separators at all. */
-function escapeFfmpegPath(p: string): string {
-  return p.replace(/\\/g, '/').replace(/:/g, '\\\\:')
-}
-
-function overlayPositionExpr(position: OverlayConfig['position']): { x: string; y: string } {
-  const margin = 20
-  switch (position) {
-    case 'top-left':
-      return { x: `${margin}`, y: `${margin}` }
-    case 'top-right':
-      return { x: `w-text_w-${margin}`, y: `${margin}` }
-    case 'bottom-left':
-      return { x: `${margin}`, y: `h-text_h-${margin}` }
-    case 'bottom-right':
-      return { x: `w-text_w-${margin}`, y: `h-text_h-${margin}` }
-  }
-}
-
-function buildOverlayFilter(config: OverlayConfig, textFilePath: string): string {
-  const { x, y } = overlayPositionExpr(config.position)
-  const fontColorHex = config.fontColor.replace('#', '')
-  const bgColorHex = config.backgroundColor.replace('#', '')
-  const bgOpacity = (Math.max(0, Math.min(100, config.backgroundOpacity)) / 100).toFixed(2)
-  const lineSpacing = Math.max(2, Math.round(config.fontSize * 0.3))
-
-  return [
-    `drawtext=fontfile=${escapeFfmpegPath(SYSTEM_FONT_FILE)}`,
-    `textfile=${escapeFfmpegPath(textFilePath)}`,
-    'reload=1',
-    `x=${x}`,
-    `y=${y}`,
-    `fontsize=${config.fontSize}`,
-    `fontcolor=0x${fontColorHex}`,
-    'box=1',
-    `boxcolor=0x${bgColorHex}@${bgOpacity}`,
-    'boxborderw=8',
-    `line_spacing=${lineSpacing}`
-  ].join(':')
-}
-
-function summarizeFfmpegError(stderrTail: string): string {
+export function summarizeFfmpegError(stderrTail: string): string {
   if (stderrTail.includes('Could not run graph')) return 'Camera is unavailable or already in use'
   if (stderrTail.toLowerCase().includes('no such file or directory')) return 'Camera device not found (disconnected?)'
   if (stderrTail.toLowerCase().includes('permission denied')) return 'Camera access denied'

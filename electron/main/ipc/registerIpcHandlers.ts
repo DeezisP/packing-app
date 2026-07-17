@@ -9,6 +9,7 @@ import { scannerManager } from '../services/ScannerManager'
 import { rawInputService } from '../services/RawInputService'
 import { stationManager } from '../services/StationManager'
 import { recordingEngine } from '../services/RecordingEngine'
+import { captureIngestService } from '../services/CaptureIngestService'
 import { updateService } from '../services/UpdateService'
 import { apiQueueService } from '../services/ApiQueueService'
 import { logger } from '../services/Logger'
@@ -19,7 +20,14 @@ import { resolveFfmpegPath } from '../services/FfmpegLocator'
 import { listWindowsCameras } from '../services/WindowsDeviceService'
 import { checkFileForPlayback } from '../services/MediaProtocol'
 import { API_KEY_PLACEHOLDER } from '@shared/types'
-import type { AppConfig, SearchFilters, DiagnosticsStationAssignment, LogEntry } from '@shared/types'
+import type {
+  AppConfig,
+  SearchFilters,
+  DiagnosticsStationAssignment,
+  LogEntry,
+  CaptureChunkPayload,
+  CaptureErrorPayload
+} from '@shared/types'
 
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -125,10 +133,11 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.camerasGetCapabilities, (_e, cameraId: string) => cameraManager.getCapabilities(cameraId))
 
-  ipcMain.handle(IPC.camerasGetOwner, (_e, cameraId: string) => cameraManager.getOwner(cameraId))
-
-  ipcMain.handle(IPC.cameraReportPreviewOwnership, (_e, cameraId: string, stationId: string, active: boolean) =>
-    cameraManager.reportPreviewOwnership(cameraId, stationId, active)
+  // One-way, not invoke - see CaptureIngestService/useRecordingCapture. The
+  // live camera preview itself is never involved in any of this.
+  ipcMain.on(IPC.recordingChunk, (_e, payload: CaptureChunkPayload) => captureIngestService.writeChunk(payload))
+  ipcMain.on(IPC.recordingCaptureError, (_e, payload: CaptureErrorPayload) =>
+    captureIngestService.reportCaptureError(payload.sessionId, payload.stationId, payload.message)
   )
 
   // Gathers every independent camera-detection source (ffmpeg/DirectShow,
@@ -160,16 +169,13 @@ export function registerIpcHandlers(): void {
     }
   })
 
-  ipcMain.handle(IPC.diagnosticsTestRecording, async (_e, cameraId: string, micName: string | null) => {
-    if (cameraManager.getOwner(cameraId) === 'ffmpeg') {
-      return {
-        success: false,
-        error: 'กล้องนี้กำลังถูกใช้บันทึกวิดีโอของสถานีอยู่ - ไม่สามารถทดสอบได้ในขณะนี้',
-        ffmpegCommand: ''
-      }
-    }
-    return cameraManager.withExclusiveAccess(cameraId, 'diagnostics', () => recordingEngine.testRecording(cameraId, micName))
-  })
+  // Safe to call directly with zero coordination - the Dashboard's live
+  // preview for this camera is already unmounted by the time the operator
+  // can reach this button (Settings/Dashboard are mutually-exclusive tabs in
+  // the one renderer window), so nothing else can be holding the device.
+  ipcMain.handle(IPC.diagnosticsTestRecording, (_e, cameraId: string, micName: string | null) =>
+    recordingEngine.testRecording(cameraId, micName)
+  )
 
   ipcMain.handle(IPC.diagnosticsExport, async (_e, text: string) => {
     const result = await dialog.showSaveDialog({
@@ -274,9 +280,8 @@ export function registerIpcHandlers(): void {
   stationManager.on('saveLocationStatus', (status) => broadcast(IPC.configOnSaveLocationStatus, status))
   stationManager.on('validationChanged', (issues) => broadcast(IPC.stationOnValidationChanged, issues))
   cameraManager.on('changed', (payload) => broadcast(IPC.cameraOnListChanged, payload))
-  cameraManager.on('previewReleaseRequested', (payload) => broadcast(IPC.cameraOnReleaseForRecording, payload))
-  cameraManager.on('recordingReleased', (payload) => broadcast(IPC.cameraOnReacquireAfterRecording, payload))
-  recordingEngine.on('previewFrame', (payload) => broadcast(IPC.cameraOnPreviewFrame, payload))
+  stationManager.on('captureStart', (payload) => broadcast(IPC.recordingBeginCapture, payload))
+  stationManager.on('captureStop', (payload) => broadcast(IPC.recordingEndCapture, payload))
   scannerManager.on('changed', (devices) => broadcast(IPC.scannersOnListChanged, devices))
   rawInputService.on('keydown', (payload) => broadcast(IPC.scannersOnRawKeydown, payload))
   logger.on('entry', (entry) => broadcast(IPC.systemOnLogEntry, entry))

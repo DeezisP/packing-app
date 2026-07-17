@@ -7,25 +7,21 @@ import type { CameraDevice, StationConfig, CameraCapabilityOption } from '@share
 
 const POLL_INTERVAL_MS = 5000
 
-/** A UVC webcam driver only ever grants one active capture graph per
- *  physical device - the renderer's own getUserMedia() preview and ffmpeg's
- *  `-f dshow` recording capture are two completely independent OS-level
- *  connections and can never both hold the same camera open at once (that's
- *  the root cause of "Camera is unavailable or already in use" during
- *  recording - the preview already had it). This type is who currently holds
- *  that single slot. */
-type CameraOwner = 'preview' | 'ffmpeg'
-
-interface OwnerEntry {
-  owner: CameraOwner
-  stationId: string
-}
-
-const PREVIEW_RELEASE_TIMEOUT_MS = 1500
-
 /** Enumerates USB webcams (and microphones) visible to Windows via ffmpeg's
  *  DirectShow (dshow) device lister, and polls periodically so the UI can
- *  react to cameras being plugged in / unplugged. */
+ *  react to cameras being plugged in / unplugged.
+ *
+ *  Camera *ownership* (who currently holds the single exclusive capture
+ *  session a UVC driver grants) is no longer this class's concern - the
+ *  renderer's getUserMedia() preview is the only thing that ever opens a
+ *  station's camera live, for as long as its dashboard card is mounted;
+ *  recording captures that same already-open MediaStream instead of
+ *  spawning a competing ffmpeg dshow process (see CaptureIngestService).
+ *  The only remaining ffmpeg+dshow camera opens are the isolated Diagnostics
+ *  "Test Recording" flow (RecordingEngine.testRecording) - safe with zero
+ *  coordination because Settings and Dashboard are mutually-exclusive tabs
+ *  in the one renderer window, so the live preview is already unmounted
+ *  (and its getUserMedia track stopped) by the time that flow can run. */
 class CameraManager extends EventEmitter {
   private lastVideoDevices: CameraDevice[] = []
   private lastAudioDevices: string[] = []
@@ -33,8 +29,6 @@ class CameraManager extends EventEmitter {
   private pollTimer: NodeJS.Timeout | null = null
   private capabilitiesCache = new Map<string, CameraCapabilityOption[]>()
   private capabilitiesInFlight = new Map<string, Promise<CameraCapabilityOption[]>>()
-  private owners = new Map<string, OwnerEntry>()
-  private pendingPreviewReleases = new Map<string, { resolve: () => void; timeout: NodeJS.Timeout }>()
 
   private runDshowListing(): Promise<{ video: CameraDevice[]; audio: string[] }> {
     return new Promise((resolve) => {
@@ -103,100 +97,6 @@ class CameraManager extends EventEmitter {
 
   getLastKnownDevices(): CameraDevice[] {
     return this.lastVideoDevices
-  }
-
-  getOwner(cameraId: string): CameraOwner | null {
-    return this.owners.get(cameraId)?.owner ?? null
-  }
-
-  /** Called by the renderer (see useCameraPreview) whenever its getUserMedia
-   *  preview for a camera actually opens or closes, so the main process
-   *  always knows who currently holds a camera - purely a truthful record of
-   *  what the renderer already did, not a request. `active: false` also
-   *  resolves any pending requestPreviewRelease() wait for this camera,
-   *  since a renderer-reported release *is* the confirmation that call is
-   *  waiting for. */
-  reportPreviewOwnership(cameraId: string, stationId: string, active: boolean): void {
-    if (active) {
-      this.owners.set(cameraId, { owner: 'preview', stationId })
-      logger.info('Opening Preview', { cameraId, owner: 'preview', stationId, success: true })
-      return
-    }
-
-    const current = this.owners.get(cameraId)
-    if (current?.owner === 'preview') this.owners.delete(cameraId)
-    logger.info('Preview released', { cameraId, stationId })
-
-    const pending = this.pendingPreviewReleases.get(cameraId)
-    if (pending) {
-      clearTimeout(pending.timeout)
-      this.pendingPreviewReleases.delete(cameraId)
-      pending.resolve()
-    }
-  }
-
-  /** Asks every renderer window to stop its live preview for this camera
-   *  (see `cameras:onReleaseForRecording`) and waits for confirmation that
-   *  the MediaStream track was actually stopped - releasing the OS-level
-   *  capture handle - before resolving, so ffmpeg never races the preview
-   *  for the same physical device. A camera the preview doesn't currently
-   *  hold resolves immediately; one that never confirms (closed/unresponsive
-   *  renderer window) still resolves after a short timeout, so a recording
-   *  can never hang waiting on a preview that's gone. */
-  requestPreviewRelease(cameraId: string, stationId: string): Promise<void> {
-    if (this.getOwner(cameraId) !== 'preview') return Promise.resolve()
-
-    return new Promise((resolve) => {
-      const timeout = setTimeout(() => {
-        this.pendingPreviewReleases.delete(cameraId)
-        logger.warn('Preview release not confirmed in time, proceeding anyway', { cameraId, stationId })
-        resolve()
-      }, PREVIEW_RELEASE_TIMEOUT_MS)
-      this.pendingPreviewReleases.set(cameraId, { resolve, timeout })
-      this.emit('previewReleaseRequested', { cameraId, stationId })
-    })
-  }
-
-  /** Marks a camera as owned by ffmpeg - call only once requestPreviewRelease
-   *  has resolved, so recording never claims a camera the preview still
-   *  thinks it holds. */
-  claimForRecording(cameraId: string, stationId: string): void {
-    this.owners.set(cameraId, { owner: 'ffmpeg', stationId })
-  }
-
-  /** Releases ffmpeg's ownership and tells every renderer window it's safe to
-   *  reacquire the preview for this camera (see
-   *  `cameras:onReacquireAfterRecording`) - call only once the ffmpeg process
-   *  has actually exited, not merely been asked to stop, so the preview
-   *  never races a still-shutting-down recording for the device. A no-op if
-   *  something else already owns the camera (e.g. this was already released,
-   *  or a diagnostic test claimed it in between). */
-  releaseFromRecording(cameraId: string, stationId: string): void {
-    const current = this.owners.get(cameraId)
-    if (current?.owner === 'ffmpeg') this.owners.delete(cameraId)
-    this.emit('recordingReleased', { cameraId, stationId })
-  }
-
-  /** Convenience wrapper for a short-lived, fully-awaited exclusive use of a
-   *  camera (the Diagnostics "test recording" flow) - unlike a station
-   *  recording, which stays claimed for the whole recording duration via
-   *  claimForRecording/releaseFromRecording called separately at start/stop,
-   *  this claims, runs, and releases around one bounded async call. */
-  async withExclusiveAccess<T>(cameraId: string, stationId: string, fn: () => Promise<T>): Promise<T> {
-    const alreadyOpenByPreview = this.getOwner(cameraId) === 'preview'
-    logger.info('Start Recording', {
-      cameraId,
-      stationId,
-      alreadyOpen: alreadyOpenByPreview,
-      reuseExistingCapture: false
-    })
-    await this.requestPreviewRelease(cameraId, stationId)
-    this.claimForRecording(cameraId, stationId)
-    try {
-      return await fn()
-    } finally {
-      this.releaseFromRecording(cameraId, stationId)
-    }
   }
 
   /** Resolutions/frame-rates a specific camera actually reports supporting

@@ -11,10 +11,17 @@ interface CameraPreviewProps {
   /** The current full camera list - needed to disambiguate identical-name
    *  devices when matching the browser's own getUserMedia device list. */
   cameras: CameraDevice[]
-  /** Ownership label reported to the main process (see CameraManager) so it
-   *  can log and coordinate who currently holds this camera - a station id,
-   *  or a synthetic id like 'diagnostics' for a preview not tied to one. */
-  stationId: string
+  /** Lets a parent (StationCard) share this exact <video> element with
+   *  useRecordingCapture, which draws frames directly from it for the
+   *  overlay-compositing recording path - see useRecordingCapture.ts. Falls
+   *  back to an internally-owned ref when not provided (e.g. TestCameraModal,
+   *  which never records). */
+  videoRef?: React.RefObject<HTMLVideoElement>
+  /** The station's configured quality preset, requested as `ideal`
+   *  getUserMedia constraints - see useCameraPreview's own doc comment for
+   *  why the preview itself now needs to know this. Omitted for a preview
+   *  not tied to a specific station (e.g. TestCameraModal). */
+  preset?: { width: number; height: number; fps: number }
   /** Whether a camera is assigned in config at all, independent of live
    *  connectivity - drives the "no camera assigned" placeholder. Defaults to
    *  Boolean(cameraId), which is correct when the caller already knows the
@@ -29,46 +36,36 @@ interface CameraPreviewProps {
 /** The live <video> element wired to one specific camera device (by unique
  *  id, never by friendly name - see useCameraPreview), plus the shared
  *  "no camera / preview unavailable" states. Used by StationCard and
- *  TestCameraModal so the preview wiring only exists in one place. */
+ *  TestCameraModal so the preview wiring only exists in one place.
+ *
+ *  This <video> element is never touched by recording start/stop - there is
+ *  no placeholder, no swap, no reconnect. Recording captures this same
+ *  already-live stream instead of competing for the camera - see
+ *  useCameraPreview/useRecordingCapture. */
 export function CameraPreview({
   cameraId,
   cameras,
-  stationId,
+  videoRef,
+  preset,
   configured,
   overlay,
   placeholderText,
   className,
   children
 }: CameraPreviewProps): JSX.Element {
-  const { videoRef, error, releasedForRecording, liveFrameUrl } = useCameraPreview(cameraId, cameras, stationId)
+  const { videoRef: internalVideoRef, error } = useCameraPreview(cameraId, cameras, videoRef, preset)
   const isConfigured = configured ?? Boolean(cameraId)
 
   return (
     <div className={`relative aspect-video bg-black overflow-hidden ${className ?? ''}`}>
-      <video ref={videoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
-      {/* While recording, ffmpeg (not getUserMedia) owns the camera, so the
-          <video> element above has no active stream during this window -
-          this covers it with a genuinely live (low-res/low-fps) feed
-          streamed from the recording's own ffmpeg process instead (see
-          PreviewStreamService/useCameraPreview), falling back to a plain
-          "starting" placeholder for the brief moment before the first frame
-          arrives. */}
-      {cameraId && releasedForRecording && (
-        liveFrameUrl ? (
-          <img src={liveFrameUrl} alt="" className="absolute inset-0 w-full h-full object-cover" />
-        ) : (
-          <div className="absolute inset-0 flex items-center justify-center bg-black text-slate-300 text-sm px-4 text-center">
-            {strings.camera.connectingLiveView}
-          </div>
-        )
-      )}
+      <video ref={internalVideoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
       {overlay}
       {!isConfigured && (
         <div className="absolute inset-0 flex items-center justify-center text-zinc-400 text-sm">
           {placeholderText ?? strings.stationCard.noCameraAssigned}
         </div>
       )}
-      {cameraId && !releasedForRecording && error && (
+      {cameraId && error && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/70 text-warn-500 text-sm px-4 text-center">
           {strings.camera.previewUnavailable(error)}
         </div>
