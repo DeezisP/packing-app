@@ -90,6 +90,10 @@
     @apply w-2.5 h-2.5 rounded-full bg-rec-500;
     animation: pulse-rec 1.4s ease-in-out infinite;
   }
+  .processing-dot {
+    @apply w-2.5 h-2.5 rounded-full bg-accent-500;
+    animation: pulse-rec 1.4s ease-in-out infinite;
+  }
   @keyframes pulse-rec {
     0%,
     100% {

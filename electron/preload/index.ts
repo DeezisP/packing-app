@@ -111,6 +111,16 @@ const api = {
       return (): void => {
         ipcRenderer.removeListener(IPC.cameraOnReacquireAfterRecording, listener)
       }
+    },
+    onPreviewFrame: (cb: (payload: { stationId: string; cameraId: string; jpeg: Uint8Array }) => void) => {
+      const listener = (
+        _e: Electron.IpcRendererEvent,
+        payload: { stationId: string; cameraId: string; jpeg: Uint8Array }
+      ): void => cb(payload)
+      ipcRenderer.on(IPC.cameraOnPreviewFrame, listener)
+      return (): void => {
+        ipcRenderer.removeListener(IPC.cameraOnPreviewFrame, listener)
+      }
     }
   },
   diagnostics: {

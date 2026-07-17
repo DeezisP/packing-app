@@ -59,6 +59,7 @@ export const strings = {
       'สแกนเนอร์ที่จับคู่ไว้หลุดการเชื่อมต่อ - สถานีนี้ยังใช้งานได้ผ่านตัวเลือกสถานีที่ใช้งานอยู่จนกว่าจะเชื่อมต่อกลับ',
     statusIdle: 'รอดำเนินการ',
     statusRecording: 'กำลังบันทึก',
+    statusProcessing: 'กำลังประมวลผล',
     statusError: 'ข้อผิดพลาด'
   },
 
@@ -102,7 +103,7 @@ export const strings = {
 
   camera: {
     previewUnavailable: (err: string): string => `พรีวิวใช้งานไม่ได้: ${err}`,
-    previewPausedForRecording: 'กำลังบันทึกวิดีโอ - พรีวิวจะกลับมาอีกครั้งเมื่อหยุดบันทึก'
+    connectingLiveView: 'กำลังเชื่อมต่อภาพขณะบันทึก...'
   },
 
   videoPlayer: {

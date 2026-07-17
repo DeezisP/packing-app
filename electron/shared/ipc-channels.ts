@@ -31,6 +31,7 @@ export const IPC = {
   cameraReportPreviewOwnership: 'cameras:reportPreviewOwnership',
   cameraOnReleaseForRecording: 'cameras:onReleaseForRecording',
   cameraOnReacquireAfterRecording: 'cameras:onReacquireAfterRecording',
+  cameraOnPreviewFrame: 'cameras:onPreviewFrame',
 
   // Diagnostics
   diagnosticsGet: 'diagnostics:get',

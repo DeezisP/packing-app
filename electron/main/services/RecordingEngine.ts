@@ -5,12 +5,23 @@ import path from 'node:path'
 import { EventEmitter } from 'node:events'
 import { resolveFfmpegPath } from './FfmpegLocator'
 import { logger } from './Logger'
+import { previewStreamService } from './PreviewStreamService'
 import { QUALITY_PRESETS, type StationConfig, type OverlayConfig } from '@shared/types'
 
 const SYSTEM_FONT_FILE = 'C:/Windows/Fonts/arial.ttf'
 
+/** Resolution/frame-rate/quality of the live-preview MJPEG side-channel -
+ *  deliberately small and low-fps since it's only there for the operator to
+ *  confirm framing/lighting while ffmpeg holds the camera, not to be a
+ *  faithful copy of the actual recording. Keeping it cheap also keeps its
+ *  encode cost negligible next to the main libx264 chain. */
+const PREVIEW_WIDTH = 480
+const PREVIEW_FPS = 8
+const PREVIEW_MJPEG_QUALITY = '5'
+
 interface ActiveRecording {
   stationId: string
+  cameraDeviceId: string
   process: ChildProcessWithoutNullStreams
   outputPath: string
   stoppedByUs: boolean
@@ -27,6 +38,21 @@ interface StartResult {
  *  independent - starting/stopping one never touches another's process. */
 class RecordingEngine extends EventEmitter {
   private active = new Map<string, ActiveRecording>()
+
+  constructor() {
+    super()
+    // PreviewStreamService only knows a stationId (see its own doc comment);
+    // only RecordingEngine knows which camera that station is actually
+    // recording, so the cameraId the renderer needs to filter on is attached
+    // here rather than threaded through the pipe layer itself. Frames for a
+    // station with no active recording (a stale/late frame right at
+    // shutdown) are silently dropped.
+    previewStreamService.on('frame', ({ stationId, jpeg }: { stationId: string; jpeg: Uint8Array }) => {
+      const record = this.active.get(stationId)
+      if (!record) return
+      this.emit('previewFrame', { stationId, cameraId: record.cameraDeviceId, jpeg })
+    })
+  }
 
   isRecording(stationId: string): boolean {
     return this.active.has(stationId)
@@ -49,6 +75,10 @@ class RecordingEngine extends EventEmitter {
 
     const preset = QUALITY_PRESETS[station.qualityPreset]
     const ffmpegPath = resolveFfmpegPath()
+    // Must already be listening before ffmpeg is spawned - see
+    // PreviewStreamService.start. Resolves null (no live preview, recording
+    // proceeds exactly as before) if the pipe server itself couldn't start.
+    const previewPipePath = await previewStreamService.start(station.id)
     const args = buildRecordArgs({
       cameraDeviceId,
       micName: station.micName,
@@ -57,7 +87,8 @@ class RecordingEngine extends EventEmitter {
       fps: station.fps,
       bitrateKbps: station.bitrateKbps,
       outputPath: videoPath,
-      overlay
+      overlay,
+      previewPipePath
     })
 
     logger.info('Recording start: launching ffmpeg', {
@@ -65,12 +96,14 @@ class RecordingEngine extends EventEmitter {
       barcode,
       videoPath,
       ffmpegPath,
+      livePreview: previewPipePath !== null,
       commandLine: `${ffmpegPath} ${args.join(' ')}`
     })
 
     const child = spawn(ffmpegPath, args, { stdio: ['pipe', 'pipe', 'pipe'] })
     const record: ActiveRecording = {
       stationId: station.id,
+      cameraDeviceId,
       process: child,
       outputPath: videoPath,
       stoppedByUs: false,
@@ -91,6 +124,7 @@ class RecordingEngine extends EventEmitter {
 
     child.on('exit', (code, signal) => {
       this.active.delete(station.id)
+      previewStreamService.stop(station.id)
       record.stopResolvers.forEach((resolve) => resolve())
       if (!record.stoppedByUs) {
         logger.error('ffmpeg exited unexpectedly during recording', {
@@ -118,6 +152,7 @@ class RecordingEngine extends EventEmitter {
     child.on('error', (err) => {
       logger.error('ffmpeg failed to start', { station: station.name, error: err.message })
       this.active.delete(station.id)
+      previewStreamService.stop(station.id)
       this.emit('unexpectedExit', { stationId: station.id, barcode, message: err.message })
     })
 
@@ -367,20 +402,22 @@ function buildRecordArgs(input: {
   bitrateKbps: number
   outputPath: string
   overlay: { config: OverlayConfig; textFilePath: string } | null
+  /** Named-pipe path from PreviewStreamService for a second, low-res MJPEG
+   *  output branch that gives the renderer a genuinely live feed while
+   *  ffmpeg holds the camera - null skips the branch entirely (e.g. the pipe
+   *  server failed to start), in which case the command below is
+   *  byte-for-byte what it always was: one input, one output. A first
+   *  attempt at this (a rotating image2 preview file) was tried and
+   *  reverted - see PreviewStreamService's doc comment for why a pipe avoids
+   *  that failure mode, and why a second *output* here (as opposed to a
+   *  second process touching the camera) can't race the primary recording
+   *  for the device. */
+  previewPipePath: string | null
 }): string[] {
   const deviceSpec = input.micName
     ? `video=${input.cameraDeviceId}:audio=${input.micName}`
     : `video=${input.cameraDeviceId}`
 
-  // Single input, single output - a second ("live preview during recording")
-  // output branch was tried here and reverted: it risked the image2 preview
-  // muxer's frequent open/overwrite/close cycle stalling or erroring
-  // (observed contention with the renderer concurrently reading the same
-  // file), which can hang ffmpeg on the graceful 'q' shutdown long enough to
-  // hit the 10s SIGKILL fallback in stop() - killing ffmpeg mid-finalization
-  // is exactly what produces a recording with no moov atom, i.e. a saved but
-  // unplayable file. One input/one output keeps the actual recording's
-  // finalization dependent on nothing but itself.
   const args = [
     '-hide_banner',
     '-loglevel',
@@ -397,7 +434,24 @@ function buildRecordArgs(input: {
     deviceSpec
   ]
 
-  if (input.overlay?.config.enabled) {
+  if (input.previewPipePath) {
+    // Splits the decoded camera feed into two independent chains from one
+    // input: the full-quality chain recorded exactly as before (overlay
+    // burned in first, if enabled), and a small/low-fps chain mjpeg-encoded
+    // straight to the live-preview pipe. Once -filter_complex is in use,
+    // stream selection is no longer automatic, so every stream going to
+    // every output (including the main chain's audio) must be -map'd
+    // explicitly below.
+    const recLabel = input.overlay?.config.enabled ? 'recin' : 'rec'
+    const filterParts = [`[0:v]split=2[${recLabel}][previn]`]
+    if (input.overlay?.config.enabled) {
+      filterParts.push(`[recin]${buildOverlayFilter(input.overlay.config, input.overlay.textFilePath)}[rec]`)
+    }
+    filterParts.push(`[previn]scale=${PREVIEW_WIDTH}:-2,fps=${PREVIEW_FPS}[prevout]`)
+    args.push('-filter_complex', filterParts.join(';'))
+    args.push('-map', '[rec]')
+    if (input.micName) args.push('-map', '0:a')
+  } else if (input.overlay?.config.enabled) {
     args.push('-vf', buildOverlayFilter(input.overlay.config, input.overlay.textFilePath))
   }
 
@@ -410,6 +464,11 @@ function buildRecordArgs(input: {
   }
 
   args.push('-movflags', '+faststart', '-y', input.outputPath)
+
+  if (input.previewPipePath) {
+    args.push('-map', '[prevout]', '-c:v', 'mjpeg', '-q:v', PREVIEW_MJPEG_QUALITY, '-f', 'mjpeg', input.previewPipePath)
+  }
+
   return args
 }
 

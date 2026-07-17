@@ -513,6 +513,13 @@ class StationManager extends EventEmitter {
     // the preview race a still-shutting-down ffmpeg process for the device.
     if (state.activeCameraId) cameraManager.releaseFromRecording(state.activeCameraId, stationId)
 
+    // The camera is already back with the live preview at this point - flip
+    // to 'processing' now rather than leaving the dashboard showing a frozen
+    // "Recording" timer for the verify/thumbnail/DB/metadata work still
+    // happening below. This is what makes the stop feel instant to the
+    // operator even though the recording isn't fully finalized yet.
+    this.setState(stationId, { status: 'processing' })
+
     // The file on disk isn't trustworthy just because ffmpeg's process
     // exited - a force-killed process (see RecordingEngine.stop's SIGKILL
     // fallback) can leave a non-empty but undecodable file with no moov

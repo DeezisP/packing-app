@@ -276,6 +276,7 @@ export function registerIpcHandlers(): void {
   cameraManager.on('changed', (payload) => broadcast(IPC.cameraOnListChanged, payload))
   cameraManager.on('previewReleaseRequested', (payload) => broadcast(IPC.cameraOnReleaseForRecording, payload))
   cameraManager.on('recordingReleased', (payload) => broadcast(IPC.cameraOnReacquireAfterRecording, payload))
+  recordingEngine.on('previewFrame', (payload) => broadcast(IPC.cameraOnPreviewFrame, payload))
   scannerManager.on('changed', (devices) => broadcast(IPC.scannersOnListChanged, devices))
   rawInputService.on('keydown', (payload) => broadcast(IPC.scannersOnRawKeydown, payload))
   logger.on('entry', (entry) => broadcast(IPC.systemOnLogEntry, entry))

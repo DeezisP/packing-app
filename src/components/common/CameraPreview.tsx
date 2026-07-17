@@ -40,22 +40,27 @@ export function CameraPreview({
   className,
   children
 }: CameraPreviewProps): JSX.Element {
-  const { videoRef, error, releasedForRecording } = useCameraPreview(cameraId, cameras, stationId)
+  const { videoRef, error, releasedForRecording, liveFrameUrl } = useCameraPreview(cameraId, cameras, stationId)
   const isConfigured = configured ?? Boolean(cameraId)
 
   return (
     <div className={`relative aspect-video bg-black overflow-hidden ${className ?? ''}`}>
       <video ref={videoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
       {/* While recording, ffmpeg (not getUserMedia) owns the camera, so the
-          <video> element above has no active stream during this window - a
-          plain "recording in progress" placeholder covers it. A live preview
-          fed from the recording's own ffmpeg process was tried and reverted:
-          it risked stalling the recording's shutdown and corrupting the
-          output file (see RecordingEngine.buildRecordArgs). */}
+          <video> element above has no active stream during this window -
+          this covers it with a genuinely live (low-res/low-fps) feed
+          streamed from the recording's own ffmpeg process instead (see
+          PreviewStreamService/useCameraPreview), falling back to a plain
+          "starting" placeholder for the brief moment before the first frame
+          arrives. */}
       {cameraId && releasedForRecording && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black text-slate-300 text-sm px-4 text-center">
-          {strings.camera.previewPausedForRecording}
-        </div>
+        liveFrameUrl ? (
+          <img src={liveFrameUrl} alt="" className="absolute inset-0 w-full h-full object-cover" />
+        ) : (
+          <div className="absolute inset-0 flex items-center justify-center bg-black text-slate-300 text-sm px-4 text-center">
+            {strings.camera.connectingLiveView}
+          </div>
+        )
       )}
       {overlay}
       {!isConfigured && (

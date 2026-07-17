@@ -375,7 +375,13 @@ export interface SearchFilters {
 
 export interface StationRuntimeState {
   stationId: string
-  status: 'idle' | 'recording' | 'error'
+  /** 'processing' covers the window between ffmpeg actually exiting (camera
+   *  already handed back to the live preview) and the recording being fully
+   *  usable (decode verification, thumbnail extraction, DB/metadata write,
+   *  warehouse API enqueue all still running) - see StationManager.stopRecording.
+   *  Kept distinct from 'recording' so the dashboard stops showing a frozen
+   *  elapsed timer for work the camera itself is no longer part of. */
+  status: 'idle' | 'recording' | 'processing' | 'error'
   barcode: string | null
   cameraName: string | null
   cameraConnected: boolean

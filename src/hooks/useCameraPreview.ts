@@ -85,16 +85,21 @@ export function useCameraPreview(
    *  recording is using it - distinct from `error`, since this isn't a
    *  failure, just the ffmpeg/recording handoff (see CameraManager's
    *  ownership doc comment). getUserMedia resumes automatically the moment
-   *  recording releases the camera back. A live (dual-output ffmpeg) preview
-   *  during this window was tried and reverted after it caused the
-   *  recording process to occasionally hang on shutdown and produce
-   *  unplayable files - see RecordingEngine.buildRecordArgs. The dashboard
-   *  shows a plain "recording in progress" placeholder for now instead. */
+   *  recording releases the camera back. While this is true, `liveFrameUrl`
+   *  carries a genuinely live (if low-res/low-fps) feed streamed from the
+   *  recording's own ffmpeg process - see PreviewStreamService. */
   releasedForRecording: boolean
+  /** Object URL for the most recent live-preview JPEG frame received while
+   *  `releasedForRecording` is true - null until the first frame arrives
+   *  (ffmpeg needs a moment to start up) and whenever not recording. Caller
+   *  must not hold onto this across renders; a new URL replaces (and
+   *  revokes) the previous one on every frame. */
+  liveFrameUrl: string | null
 } {
   const videoRef = useRef<HTMLVideoElement>(null)
   const [error, setError] = useState<string | null>(null)
   const [releasedForRecording, setReleasedForRecording] = useState(false)
+  const [liveFrameUrl, setLiveFrameUrl] = useState<string | null>(null)
 
   const target = cameraId ? (cameras.find((c) => c.id === cameraId) ?? null) : null
   const occurrence = target
@@ -112,6 +117,18 @@ export function useCameraPreview(
     if (!target) return
     const targetId = target.id
     let cancelled = false
+    // Tracks the currently-shown frame's object URL outside React state so
+    // it can be revoked deterministically (on the next frame, on reacquire,
+    // and on unmount) without racing setState's own batching.
+    let currentFrameUrl: string | null = null
+
+    const clearFrame = (): void => {
+      if (currentFrameUrl) {
+        URL.revokeObjectURL(currentFrameUrl)
+        currentFrameUrl = null
+      }
+      setLiveFrameUrl(null)
+    }
 
     // Covers the reverse race from the release-broadcast handshake below:
     // this component could mount (or remount) while ffmpeg already owns the
@@ -126,12 +143,30 @@ export function useCameraPreview(
       if (payload.cameraId === targetId) setReleasedForRecording(true)
     })
     const offReacquire = window.electronAPI.cameras.onReacquireAfterRecording((payload) => {
-      if (payload.cameraId === targetId) setReleasedForRecording(false)
+      if (payload.cameraId === targetId) {
+        setReleasedForRecording(false)
+        clearFrame()
+      }
+    })
+    const offFrame = window.electronAPI.cameras.onPreviewFrame((payload) => {
+      if (payload.cameraId !== targetId) return
+      // Electron's IPC structured clone can hand back a Uint8Array typed
+      // over a SharedArrayBuffer-compatible backing, which Blob's type
+      // (ArrayBufferView<ArrayBuffer> only) rejects - Uint8Array.from copies
+      // into a fresh plain-ArrayBuffer-backed view, which is cheap at this
+      // frame size (see PreviewStreamService/RecordingEngine's preview
+      // resolution/fps).
+      const url = URL.createObjectURL(new Blob([Uint8Array.from(payload.jpeg)], { type: 'image/jpeg' }))
+      if (currentFrameUrl) URL.revokeObjectURL(currentFrameUrl)
+      currentFrameUrl = url
+      setLiveFrameUrl(url)
     })
     return () => {
       cancelled = true
       offRelease()
       offReacquire()
+      offFrame()
+      clearFrame()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target?.id])
@@ -204,5 +239,5 @@ export function useCameraPreview(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target?.id, occurrence, releasedForRecording, stationId])
 
-  return { videoRef, error, releasedForRecording }
+  return { videoRef, error, releasedForRecording, liveFrameUrl }
 }
