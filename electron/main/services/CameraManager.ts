@@ -11,17 +11,19 @@ const POLL_INTERVAL_MS = 5000
  *  DirectShow (dshow) device lister, and polls periodically so the UI can
  *  react to cameras being plugged in / unplugged.
  *
- *  Camera *ownership* (who currently holds the single exclusive capture
- *  session a UVC driver grants) is no longer this class's concern - the
- *  renderer's getUserMedia() preview is the only thing that ever opens a
- *  station's camera live, for as long as its dashboard card is mounted;
- *  recording captures that same already-open MediaStream instead of
- *  spawning a competing ffmpeg dshow process (see CaptureIngestService).
- *  The only remaining ffmpeg+dshow camera opens are the isolated Diagnostics
- *  "Test Recording" flow (RecordingEngine.testRecording) - safe with zero
- *  coordination because Settings and Dashboard are mutually-exclusive tabs
- *  in the one renderer window, so the live preview is already unmounted
- *  (and its getUserMedia track stopped) by the time that flow can run. */
+ *  Camera *ownership* is not this class's concern - two different things
+ *  open a station's camera at different times, and only one may hold it at
+ *  once (confirmed against real hardware: this UVC camera rejects a second
+ *  concurrent open outright). The renderer's getUserMedia() preview holds it
+ *  for as long as a dashboard card is mounted and no recording is active;
+ *  LiveRecordingService's ffmpeg process holds it exclusively for the
+ *  duration of an actual recording, handed off via the release/resume
+ *  handshake StationManager drives (see CameraPreviewReleaseRequest in
+ *  shared/types.ts). The isolated Diagnostics "Test Recording" flow
+ *  (RecordingEngine.testRecording) needs no part of that handshake - Settings
+ *  and Dashboard are mutually-exclusive tabs in the one renderer window, so
+ *  the live preview is already unmounted (and its getUserMedia track
+ *  stopped) by the time that flow can run. */
 class CameraManager extends EventEmitter {
   private lastVideoDevices: CameraDevice[] = []
   private lastAudioDevices: string[] = []

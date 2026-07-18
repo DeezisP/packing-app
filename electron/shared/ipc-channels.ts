@@ -28,13 +28,13 @@ export const IPC = {
   cameraOnListChanged: 'cameras:onListChanged',
   camerasGetCapabilities: 'cameras:getCapabilities',
 
-  // Recording capture (renderer owns the live camera continuously; this is
-  // just the chunk pipe from its MediaRecorder to the main process - see
-  // CaptureIngestService/useRecordingCapture)
-  recordingBeginCapture: 'recording:beginCapture',
-  recordingEndCapture: 'recording:endCapture',
-  recordingChunk: 'recording:chunk',
-  recordingCaptureError: 'recording:captureError',
+  // Recording capture - ffmpeg (LiveRecordingService) owns the camera
+  // directly during recording; this is just the release/resume handshake so
+  // the renderer's own getUserMedia preview hands the device off cleanly and
+  // gets it back - see CameraPreviewReleaseRequest's doc comment.
+  recordingPreviewRelease: 'recording:previewRelease',
+  recordingPreviewReleaseAck: 'recording:previewReleaseAck',
+  recordingPreviewResume: 'recording:previewResume',
 
   // Diagnostics
   diagnosticsGet: 'diagnostics:get',

@@ -46,11 +46,20 @@ async function ensureDeviceLabelsUnlocked(): Promise<void> {
  *  `navigator.mediaDevices` label, so matching by label alone can't tell
  *  them apart.
  *
- *  This is the *only* thing that ever opens the physical camera, for as long
- *  as this hook stays mounted - recording captures this same MediaStream
- *  instead of competing for the device (see CaptureIngestService's class doc
- *  comment and useRecordingCapture), so nothing here needs to react to
- *  recording state at all; the stream is attached once and stays attached.
+ *  Recording is now owned entirely by ffmpeg in the main process (see
+ *  LiveRecordingService), opening the physical camera directly rather than
+ *  reading this hook's MediaStream - and this camera hardware cannot be
+ *  opened by two processes at once (confirmed against real hardware). So
+ *  when `stationId` is provided, this hook also answers the main process's
+ *  release/resume handshake (see CameraPreviewReleaseRequest in
+ *  shared/types.ts): on a release request for this exact camera, it stops
+ *  only the video track(s) - never clearing `videoRef.current.srcObject` -
+ *  so the `<video>` element keeps displaying its last decoded frame as a
+ *  natural "frozen preview" with zero extra frame-capture code, then acks.
+ *  On the matching resume signal, it reattaches exactly like a fresh mount.
+ *  `stationId` is omitted by callers that never record (e.g.
+ *  TestCameraModal), which then behaves exactly as before: attach once, stay
+ *  attached.
  *
  *  Chromium's device list and the DirectShow list this app's cameraId values
  *  come from are two separate id namespaces with no shared key, so for a
@@ -61,23 +70,24 @@ async function ensureDeviceLabelsUnlocked(): Promise<void> {
  *  documented guarantee, only an observed convention - but it only affects
  *  which of two *identical-model* live previews is shown; the recording this
  *  preview feeds is always the exact physical device the operator is looking
- *  at, since it's the same MediaStream either way. */
+ *  at, since StationManager resolves cameras by this same unique id. */
 export function useCameraPreview(
   cameraId: string | null,
   cameras: CameraDevice[],
   externalVideoRef?: React.RefObject<HTMLVideoElement>,
   /** Requested as `ideal` (never `exact`) getUserMedia constraints - a
    *  camera that can't hit this exact mode still attaches at its closest
-   *  supported one instead of failing outright. Recording now reads frames
-   *  directly from this same stream (see useRecordingCapture), so unlike
-   *  before - when an independent ffmpeg process forced this resolution/fps
-   *  on its own, completely decoupled from whatever the preview happened to
-   *  be showing - the preview itself must now request the station's
-   *  configured quality preset for the no-overlay capture path to actually
-   *  produce that resolution/fps. Omitted for a preview not tied to a
-   *  specific station's preset (e.g. TestCameraModal), which attaches at
-   *  the camera's own default mode exactly as before. */
-  preset?: { width: number; height: number; fps: number }
+   *  supported one instead of failing outright. Purely a live-preview
+   *  quality hint now (recording is ffmpeg's own dshow capture at the
+   *  station's configured preset, independent of this stream) - omitted for
+   *  a preview not tied to a specific station's preset (e.g.
+   *  TestCameraModal), which attaches at the camera's own default mode. */
+  preset?: { width: number; height: number; fps: number },
+  /** Station this preview belongs to - only provided by callers whose
+   *  preview can be recorded (StationCard), which is what this hook needs to
+   *  know to answer the main process's release/resume handshake. See this
+   *  function's own doc comment. */
+  stationId?: string
 ): {
   videoRef: React.RefObject<HTMLVideoElement>
   error: string | null
@@ -152,8 +162,32 @@ export function useCameraPreview(
 
     attach()
 
+    // Narrow, acknowledged race: if a recording starts while this initial
+    // attach() is still in flight (getUserMedia not yet resolved), `stream`
+    // is still null when the release request arrives below, so there's
+    // nothing to stop yet - the ack still fires immediately, and the
+    // in-flight attach may go on to open the camera a moment after ffmpeg
+    // already did. Only possible in the first getUserMedia round-trip after
+    // mount/reconfigure, not during any steady-state recording start; ffmpeg's
+    // own retry-on-busy (LiveRecordingService) absorbs it if it ever happens.
+    let offRelease: (() => void) | undefined
+    let offResume: (() => void) | undefined
+    if (stationId) {
+      offRelease = window.electronAPI.capture.onPreviewRelease(({ requestId, stationId: sid, cameraId: releaseCameraId }) => {
+        if (sid !== stationId || releaseCameraId !== target!.id) return
+        stream?.getVideoTracks().forEach((t) => t.stop())
+        window.electronAPI.capture.acknowledgePreviewRelease(requestId)
+      })
+      offResume = window.electronAPI.capture.onPreviewResume(({ stationId: sid, cameraId: resumeCameraId }) => {
+        if (sid !== stationId || resumeCameraId !== target!.id) return
+        attach()
+      })
+    }
+
     return () => {
       cancelled = true
+      offRelease?.()
+      offResume?.()
       if (stream) {
         stream.getTracks().forEach((t) => t.stop())
       }
@@ -163,7 +197,7 @@ export function useCameraPreview(
     // render (e.g. derived from QUALITY_PRESETS each time) doesn't
     // needlessly re-attach the camera.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [target?.id, occurrence, preset?.width, preset?.height, preset?.fps])
+  }, [target?.id, occurrence, preset?.width, preset?.height, preset?.fps, stationId])
 
   return { videoRef, error }
 }

@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events'
 import { configManager } from './ConfigManager'
 import { database } from './Database'
 import { recordingEngine } from './RecordingEngine'
-import { captureIngestService } from './CaptureIngestService'
+import { liveRecordingService } from './LiveRecordingService'
 import { cameraManager } from './CameraManager'
 import { scannerManager } from './ScannerManager'
 import { apiQueueService } from './ApiQueueService'
@@ -13,7 +13,7 @@ import { writeRecordingMetadata } from './MetadataService'
 import { getDiskUsage, CRITICAL_DISK_STOP_BYTES } from './DiskMonitor'
 import { validateSaveLocation } from './SaveLocationValidator'
 import { logger } from './Logger'
-import { QUALITY_PRESETS, buildCameraDisplayNames, validateStations, isPresetSupported } from '@shared/types'
+import { QUALITY_PRESETS, buildCameraDisplayNames, validateStations, resolveRecordingMode } from '@shared/types'
 import type {
   StationRuntimeState,
   WrongBarcodeEvent,
@@ -22,28 +22,51 @@ import type {
   ScannerDevice,
   SaveLocationStatus,
   StationValidationIssue,
-  CaptureBeginPayload,
-  CaptureEndPayload
+  CameraPreviewReleaseRequest,
+  CameraPreviewResumeSignal
 } from '@shared/types'
 
 const TICK_INTERVAL_MS = 1000
 const SAVE_LOCATION_HEALTH_INTERVAL_MS = 10000
+/** How long to wait for the renderer to ack a camera-release request before
+ *  starting ffmpeg anyway - see requestPreviewRelease's doc comment. Well
+ *  above what an actual track.stop()+IPC round trip needs, so this only
+ *  matters when the renderer is slow/unresponsive/gone. */
+const PREVIEW_RELEASE_ACK_TIMEOUT_MS = 2000
+/** Extra margin after the release ack (or its timeout) before ffmpeg tries
+ *  to open the device - Chromium's own capture pipeline teardown after
+ *  track.stop() isn't necessarily complete the instant the renderer's ack
+ *  fires, and this camera hardware has no tolerance for a second opener
+ *  arriving too early (confirmed against real hardware: a second dshow open
+ *  fails immediately if the first hasn't fully released). Cheap insurance -
+ *  imperceptible against the rest of a barcode-scan-triggered start. */
+const DEVICE_RELEASE_SETTLE_MS = 300
+/** Disk is critically low during a force-stop-for-safety - still give
+ *  ffmpeg a real (if short) chance to write a valid mp4 trailer rather than
+ *  killing it instantly, since a killed-mid-write mp4 is exactly how the
+ *  v1.6.2 incident produced an unplayable file - just don't wait as long as
+ *  a normal stop does, given the urgency. */
+const FORCE_STOP_TIMEOUT_MS = 3000
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 interface StationRuntime extends StationRuntimeState {
   dbId: number | null
   videoPath: string | null
   /** CameraDevice.id the in-progress recording's capture session is tied to -
    *  recorded separately from the station's *configured* camera because that
-   *  config could theoretically change mid-recording. Kept for logging/
-   *  display only now - see activeSessionId for the field that actually
-   *  correlates capture chunks/transcode. Null whenever not recording. */
+   *  config could theoretically change mid-recording. Used to target the
+   *  previewResume signal at the right camera once ffmpeg releases it - see
+   *  activeSessionId for the field that actually correlates the ffmpeg
+   *  process itself. Null whenever not recording. */
   activeCameraId: string | null
-  /** Correlates this recording's capture chunks (see CaptureIngestService)
-   *  and its eventual transcode with exactly this attempt - never just
-   *  `stationId` alone, since handleScan() already allows a new recording to
-   *  start for a station whose previous one is still `status: 'processing'`
-   *  (finalizing), and the two must never be confused with each other. Null
-   *  whenever not recording. */
+  /** Correlates this recording with the specific LiveRecordingService ffmpeg
+   *  process handling it - never just `stationId` alone, since handleScan()
+   *  already allows a new recording to start for a station whose previous
+   *  one is still `status: 'processing'` (finalizing), and the two must
+   *  never be confused with each other. Null whenever not recording. */
   activeSessionId: string | null
   /** The bitrate/mic settings actually used to start this capture, captured
    *  at start time rather than re-read from config at stop time - same
@@ -51,6 +74,15 @@ interface StationRuntime extends StationRuntimeState {
    *  whenever not recording. */
   activeBitrateKbps: number | null
   activeMicName: string | null
+  /** The negotiated width/height/fps this capture actually started ffmpeg
+   *  with (post resolveRecordingMode, not just the station's configured
+   *  preset) - carried through to finalizeStoppedRecording so
+   *  verifyRecording can compare the *requested* mode against what the
+   *  decoded file actually reports, instead of only ever logging what was
+   *  asked for. Null whenever not recording. */
+  activeWidth: number | null
+  activeHeight: number | null
+  activeFps: number | null
 }
 
 /** The barcode-driven state machine described in the spec:
@@ -65,6 +97,9 @@ class StationManager extends EventEmitter {
   private saveLocationHealthTimer: NodeJS.Timeout | null = null
   private lastSaveLocationStatus: SaveLocationStatus | null = null
   private lastValidationIssues: StationValidationIssue[] = []
+  /** Resolvers for in-flight camera-release requests, keyed by requestId -
+   *  see requestPreviewRelease/resolvePreviewReleaseAck. */
+  private pendingPreviewReleaseAcks = new Map<string, () => void>()
 
   init(): void {
     for (const station of configManager.get().stations) {
@@ -85,27 +120,38 @@ class StationManager extends EventEmitter {
         activeCameraId: null,
         activeSessionId: null,
         activeBitrateKbps: null,
-        activeMicName: null
+        activeMicName: null,
+        activeWidth: null,
+        activeHeight: null,
+        activeFps: null
       })
     }
 
-    // Renderer-reported hard failure of the live capture (mic device
-    // missing, unsupported MediaRecorder mimeType, camera track ended
-    // unexpectedly) - see CaptureIngestService.reportCaptureError. Guarded
-    // by sessionId, not just stationId, so a stale error from an
-    // already-superseded session (see activeSessionId's doc comment) can
-    // never clobber a newer recording that's already underway.
-    captureIngestService.on('captureError', ({ sessionId, stationId, message }) => {
+    // ffmpeg died mid-recording on its own (camera unplugged, driver crash,
+    // etc.) rather than via a requested stop - see
+    // LiveRecordingService.handleSessionExit. Guarded by sessionId, not just
+    // stationId, so a stale error from an already-superseded session (see
+    // activeSessionId's doc comment) can never clobber a newer recording
+    // that's already underway.
+    liveRecordingService.on('captureError', ({ sessionId, stationId, message }) => {
       const state = this.states.get(stationId)
       if (!state || state.activeSessionId !== sessionId) return
       if (state.dbId) database.markError(state.dbId, message)
+      // ffmpeg has already exited, so the camera is free - give the live
+      // preview it back instead of leaving it frozen through an error state.
+      if (state.activeCameraId) {
+        this.emit('previewResume', { stationId, cameraId: state.activeCameraId } satisfies CameraPreviewResumeSignal)
+      }
       this.setState(stationId, {
         status: 'error',
         lastError: message,
         activeCameraId: null,
         activeSessionId: null,
         activeBitrateKbps: null,
-        activeMicName: null
+        activeMicName: null,
+        activeWidth: null,
+        activeHeight: null,
+        activeFps: null
       })
       logger.error('Recording stopped unexpectedly', { stationId, sessionId, message })
     })
@@ -261,7 +307,10 @@ class StationManager extends EventEmitter {
           activeCameraId: null,
           activeSessionId: null,
           activeBitrateKbps: null,
-          activeMicName: null
+          activeMicName: null,
+          activeWidth: null,
+          activeHeight: null,
+          activeFps: null
         })
         this.emit('stateChanged', this.publicState(station.id))
       } else {
@@ -311,6 +360,35 @@ class StationManager extends EventEmitter {
     }
   }
 
+  /** Tells the station's live camera preview to release its getUserMedia
+   *  track for this camera and waits for the renderer's ack - see
+   *  CameraPreviewReleaseRequest's doc comment for why this handshake exists
+   *  at all (this exact camera hardware rejects a second concurrent open).
+   *  Bounded by PREVIEW_RELEASE_ACK_TIMEOUT_MS so a slow or already-gone
+   *  renderer can never block a recording start indefinitely; ffmpeg's own
+   *  retry-on-busy in LiveRecordingService is the real backstop if release
+   *  genuinely didn't happen in time. */
+  private requestPreviewRelease(stationId: string, cameraId: string): Promise<void> {
+    const requestId = randomUUID()
+    const acked = new Promise<void>((resolve) => {
+      this.pendingPreviewReleaseAcks.set(requestId, resolve)
+    })
+    this.emit('previewReleaseRequest', { requestId, stationId, cameraId } satisfies CameraPreviewReleaseRequest)
+    const timedOut = delay(PREVIEW_RELEASE_ACK_TIMEOUT_MS)
+    return Promise.race([acked, timedOut]).then(() => {
+      this.pendingPreviewReleaseAcks.delete(requestId)
+    })
+  }
+
+  /** Called from registerIpcHandlers.ts when the renderer acks a
+   *  CameraPreviewReleaseRequest - see requestPreviewRelease. */
+  resolvePreviewReleaseAck(requestId: string): void {
+    const resolve = this.pendingPreviewReleaseAcks.get(requestId)
+    if (!resolve) return
+    this.pendingPreviewReleaseAcks.delete(requestId)
+    resolve()
+  }
+
   private async forceStopForSafety(stationId: string, reason: string): Promise<void> {
     const state = this.states.get(stationId)
     if (!state || state.status !== 'recording') return
@@ -319,21 +397,16 @@ class StationManager extends EventEmitter {
     this.setState(stationId, { status: 'processing' })
 
     if (sessionId) {
-      try {
-        this.emit('captureStop', { sessionId, stationId } satisfies CaptureEndPayload)
-        // Disk is critically low - never attempt a transcode here, it needs
-        // *more* free space, not less, and generateThumbnail/completeRecording
-        // both need a finished mp4 that doesn't exist yet (only capture.webm
-        // does at this point). Finalize immediately (no wait for the renderer
-        // to confirm) and leave the raw capture on disk rather than lose it -
-        // it's never auto-deleted, unlike the intermediate file on a normal
-        // successful stop.
-        await captureIngestService.endSession(sessionId, 0)
-      } catch (err) {
-        // Never let this leave the station stuck in 'processing' - we're
-        // already mid-emergency-stop, so just log and fall through to the
-        // same error state below regardless.
-        logger.error('Force-stop: failed to finalize capture session', { stationId, sessionId, error: (err as Error).message })
+      // Disk is critically low - still give ffmpeg a short, real chance to
+      // write a valid mp4 trailer (see FORCE_STOP_TIMEOUT_MS) rather than
+      // killing it instantly. The raw capture.mp4 is left on disk under its
+      // temp name rather than renamed to the final videoPath - matches the
+      // normal stop path's "never mark complete until verified" rule, just
+      // without ever attempting that verification here since we're mid
+      // emergency stop.
+      await liveRecordingService.stopRecording(sessionId, FORCE_STOP_TIMEOUT_MS)
+      if (state.activeCameraId) {
+        this.emit('previewResume', { stationId, cameraId: state.activeCameraId } satisfies CameraPreviewResumeSignal)
       }
     }
 
@@ -350,7 +423,10 @@ class StationManager extends EventEmitter {
       activeCameraId: null,
       activeSessionId: null,
       activeBitrateKbps: null,
-      activeMicName: null
+      activeMicName: null,
+      activeWidth: null,
+      activeHeight: null,
+      activeFps: null
     })
   }
 
@@ -460,16 +536,37 @@ class StationManager extends EventEmitter {
     const cameraDisplayName = buildCameraDisplayNames(cameraManager.getLastKnownDevices()).get(camera.id) ?? camera.name
 
     const preset = QUALITY_PRESETS[station.qualityPreset]
-    const capabilities = await cameraManager.getCapabilities(camera.id)
-    if (!isPresetSupported(preset, capabilities)) {
-      const message = `กล้องนี้ไม่รองรับคุณภาพการบันทึก "${preset.label}" - เลือกคุณภาพอื่นในหน้าตั้งค่า`
-      this.setState(stationId, { status: 'error', lastError: message })
-      logger.error('Cannot start recording: camera does not support selected quality preset', {
+
+    // Different camera models/drivers genuinely don't all support the same
+    // modes - a probe failure here (ffmpeg missing, a transient dshow
+    // hiccup) must never silently kill the whole recording attempt with an
+    // unhandled rejection, so this is defensively caught rather than left to
+    // propagate past this method the way it used to.
+    let capabilities: Awaited<ReturnType<typeof cameraManager.getCapabilities>> = []
+    try {
+      capabilities = await cameraManager.getCapabilities(camera.id)
+    } catch (err) {
+      logger.warn('Camera capability probe failed, proceeding with the configured preset as requested', {
         stationId,
-        preset: preset.id,
-        cameraId: camera.id
+        cameraId: camera.id,
+        error: (err as Error).message
       })
-      return
+    }
+
+    // A camera that can't do the exact configured preset (different model,
+    // only does 4K at 15fps, etc.) no longer blocks recording outright -
+    // the closest mode it actually supports is used instead. An empty
+    // `capabilities` list (probe failed/inconclusive) fails open, requesting
+    // the configured preset unchanged, same as before.
+    const negotiated = resolveRecordingMode({ width: preset.width, height: preset.height, fps: station.fps }, capabilities)
+    if (negotiated.width !== preset.width || negotiated.height !== preset.height || negotiated.fps !== station.fps) {
+      logger.warn('Camera does not support the configured quality preset - using the closest supported mode', {
+        stationId,
+        cameraId: camera.id,
+        preset: preset.id,
+        requested: `${preset.width}x${preset.height}@${station.fps}`,
+        negotiated: `${negotiated.width}x${negotiated.height}@${negotiated.fps}`
+      })
     }
 
     const locationStatus = await validateSaveLocation(saveLocation)
@@ -499,15 +596,75 @@ class StationManager extends EventEmitter {
 
     try {
       fs.mkdirSync(outputDir, { recursive: true })
-      captureIngestService.beginSession({ sessionId, stationId, outputDir })
+
+      // This camera hardware cannot be opened by two processes at once
+      // (confirmed against real hardware) - the renderer's live preview must
+      // release it before ffmpeg can claim it for recording. See
+      // requestPreviewRelease's doc comment for the timeout/settle reasoning.
+      await this.requestPreviewRelease(stationId, camera.id)
+      await delay(DEVICE_RELEASE_SETTLE_MS)
+
+      const result = await liveRecordingService.startRecording({
+        sessionId,
+        stationId,
+        cameraId: camera.id,
+        micName: station.micName,
+        width: negotiated.width,
+        height: negotiated.height,
+        fps: negotiated.fps,
+        bitrateKbps: station.bitrateKbps,
+        overlay,
+        startedAt: startedAt.toISOString(),
+        outputDir
+      })
+
+      if (!result.success) {
+        const message = result.error ?? 'Failed to start recording'
+        this.setState(stationId, { status: 'error', lastError: message })
+        logger.error('Failed to start recording', { stationId, barcode, error: message })
+        // Already released the preview above - ffmpeg never ended up
+        // claiming the camera, so give it straight back.
+        this.emit('previewResume', { stationId, cameraId: camera.id } satisfies CameraPreviewResumeSignal)
+        return
+      }
+
+      // One consolidated, human-readable diagnostic block per recording
+      // start - camera, what was asked for vs. what actually got used, and
+      // the encoder - so troubleshooting a machine-specific issue never
+      // requires piecing it together from several separate log lines. Same
+      // multi-line-message-plus-structured-meta style this codebase already
+      // uses for camera enumeration (see CameraManager.logEnumeration).
+      logger.info(
+        [
+          'Recording diagnostics',
+          `Camera: ${cameraDisplayName}`,
+          `Requested: ${preset.width}x${preset.height} @ ${station.fps} FPS`,
+          `Negotiated: ${negotiated.width}x${negotiated.height} @ ${negotiated.fps} FPS`,
+          `Encoder: ${result.encoder}`,
+          `Hardware Acceleration: ${result.encoder !== 'libx264' ? 'Enabled' : 'Disabled (CPU fallback)'}`
+        ].join('\n'),
+        {
+          stationId,
+          sessionId,
+          cameraId: camera.id,
+          requestedWidth: preset.width,
+          requestedHeight: preset.height,
+          requestedFps: station.fps,
+          negotiatedWidth: negotiated.width,
+          negotiatedHeight: negotiated.height,
+          negotiatedFps: negotiated.fps,
+          encoder: result.encoder,
+          hardwareAccelerated: result.encoder !== 'libx264'
+        }
+      )
 
       const dbId = database.insertRecordingStart({
         barcode,
         station: station.name,
         camera: cameraDisplayName,
         videoPath,
-        resolution: `${preset.width}x${preset.height}`,
-        fps: station.fps,
+        resolution: `${negotiated.width}x${negotiated.height}`,
+        fps: negotiated.fps,
         bitrateKbps: station.bitrateKbps
       })
 
@@ -523,7 +680,10 @@ class StationManager extends EventEmitter {
         activeCameraId: camera.id,
         activeSessionId: sessionId,
         activeBitrateKbps: station.bitrateKbps,
-        activeMicName: station.micName
+        activeMicName: station.micName,
+        activeWidth: negotiated.width,
+        activeHeight: negotiated.height,
+        activeFps: negotiated.fps
       })
       logger.info('Recording started', {
         stationId,
@@ -534,24 +694,16 @@ class StationManager extends EventEmitter {
         success: true
       })
 
-      // Tells the station's already-live camera preview to start capturing
-      // its own already-open MediaStream - the camera itself is never
-      // reopened or renegotiated, see CaptureIngestService/useRecordingCapture.
-      this.emit('captureStart', {
-        sessionId,
-        stationId,
-        cameraId: camera.id,
-        micName: station.micName,
-        preset: { width: preset.width, height: preset.height, fps: station.fps, bitrateKbps: station.bitrateKbps },
-        overlay,
-        startedAt: startedAt.toISOString()
-      } satisfies CaptureBeginPayload)
-
-      apiQueueService.enqueue('scan', barcode, resolveScannerDisplay(station).name ?? station.name, station.name)
+      // The warehouse API is only ever notified once a recording actually
+      // finishes (see finalizeStoppedRecording's `enqueue('confirm', ...)`)
+      // - starting a recording no longer reports anything upstream.
     } catch (err) {
       const message = (err as Error).message
       this.setState(stationId, { status: 'error', lastError: message })
       logger.error('Failed to start recording', { stationId, barcode, error: message })
+      // Best-effort: if this failed after the preview was already released
+      // above, make sure it isn't left frozen forever.
+      this.emit('previewResume', { stationId, cameraId: camera.id } satisfies CameraPreviewResumeSignal)
     }
   }
 
@@ -562,10 +714,10 @@ class StationManager extends EventEmitter {
     const sessionId = state.activeSessionId
     logger.info('Recording stop: requested', { stationId, barcode: state.barcode, videoPath: state.videoPath, sessionId })
 
-    // The live preview is never touched by any of this - it was never given
-    // up in the first place (see CaptureIngestService's class doc comment).
-    // Flip to 'processing' immediately rather than leaving the dashboard
-    // showing a frozen "Recording" timer for the transcode/verify/DB/
+    // The live preview stays frozen (camera released to ffmpeg) until
+    // finalizeStoppedRecording emits previewResume below, once ffmpeg has
+    // actually exited. Flip to 'processing' immediately rather than leaving
+    // the dashboard showing a frozen "Recording" timer for the verify/DB/
     // metadata work still happening below.
     this.setState(stationId, { status: 'processing' })
 
@@ -583,7 +735,10 @@ class StationManager extends EventEmitter {
         activeCameraId: null,
         activeSessionId: null,
         activeBitrateKbps: null,
-        activeMicName: null
+        activeMicName: null,
+        activeWidth: null,
+        activeHeight: null,
+        activeFps: null
       })
       return
     }
@@ -615,36 +770,63 @@ class StationManager extends EventEmitter {
         activeCameraId: null,
         activeSessionId: null,
         activeBitrateKbps: null,
-        activeMicName: null
+        activeMicName: null,
+        activeWidth: null,
+        activeHeight: null,
+        activeFps: null
       })
     }
   }
 
   private async finalizeStoppedRecording(stationId: string, state: StationRuntime, sessionId: string): Promise<void> {
-    this.emit('captureStop', { sessionId, stationId } satisfies CaptureEndPayload)
-    const { capturePath, bytesWritten } = await captureIngestService.endSession(sessionId)
+    const stopResult = await liveRecordingService.stopRecording(sessionId)
+
+    // ffmpeg has now fully released the device (its process has exited)
+    // regardless of whether the stop itself was graceful - safe to hand the
+    // live preview its camera back immediately, before the verify/thumbnail
+    // work below even starts, so the operator sees it live again as soon as
+    // possible rather than waiting on file finalization.
+    if (state.activeCameraId) {
+      this.emit('previewResume', { stationId, cameraId: state.activeCameraId } satisfies CameraPreviewResumeSignal)
+    }
 
     const station = this.getStationConfig(stationId)
-    const saveLocation = station
-      ? configManager.getResolvedSaveLocationForStation(station)
-      : configManager.getResolvedSaveLocation()
 
-    // Finishing briefly needs headroom for the finished mp4 alongside the
-    // still-on-disk capture.webm - a consideration the old single-output
-    // ffmpeg pipeline never had, since it only ever wrote one file. Sized
-    // off the actual capture rather than a flat constant since it scales
-    // with recording length/quality.
-    const usage = await getDiskUsage(saveLocation)
-    if (usage.freeBytes < bytesWritten + CRITICAL_DISK_STOP_BYTES) {
-      const message = 'พื้นที่ดิสก์ไม่เพียงพอสำหรับประมวลผลไฟล์วิดีโอ - ไฟล์ต้นฉบับถูกเก็บไว้แล้ว'
+    if (!state.videoPath) {
+      const message = 'ไม่พบตำแหน่งไฟล์วิดีโอสำหรับการบันทึกนี้'
       if (state.dbId) database.markError(state.dbId, message)
       this.writeMetadataFor(stationId, state)
-      logger.error('Recording stop: insufficient disk space to transcode, raw capture preserved', {
+      logger.error('Recording stop: no videoPath recorded for this session', { stationId, barcode: state.barcode, sessionId })
+      this.setState(stationId, {
+        status: 'error',
+        lastError: message,
+        barcode: null,
+        startedAt: null,
+        elapsedSeconds: 0,
+        dbId: null,
+        videoPath: null,
+        activeCameraId: null,
+        activeSessionId: null,
+        activeBitrateKbps: null,
+        activeMicName: null,
+        activeWidth: null,
+        activeHeight: null,
+        activeFps: null
+      })
+      return
+    }
+
+    const capturePath = path.join(path.dirname(state.videoPath), 'capture.mp4')
+
+    if (!stopResult.success) {
+      const message = stopResult.error ?? 'การบันทึกวิดีโอล้มเหลว'
+      if (state.dbId) database.markError(state.dbId, message)
+      this.writeMetadataFor(stationId, state)
+      logger.error('Recording stop: ffmpeg reported failure, raw capture (if any) preserved', {
         stationId,
         barcode: state.barcode,
         capturePath,
-        bytesWritten,
-        freeBytes: usage.freeBytes
+        error: stopResult.error
       })
       this.setState(stationId, {
         status: 'error',
@@ -657,36 +839,34 @@ class StationManager extends EventEmitter {
         activeCameraId: null,
         activeSessionId: null,
         activeBitrateKbps: null,
-        activeMicName: null
+        activeMicName: null,
+        activeWidth: null,
+        activeHeight: null,
+        activeFps: null
       })
       return
     }
 
-    // One-shot, non-live transcode of the completed capture file - the
-    // overlay (if any) is already burned in by the renderer's canvas
-    // compositing before this ever runs, see useRecordingCapture.ts.
-    const transcode = state.videoPath
-      ? await captureIngestService.transcodeToMp4({
-          sessionId,
-          capturePath,
-          outputPath: state.videoPath,
-          bitrateKbps: state.activeBitrateKbps ?? QUALITY_PRESETS['1080p30'].bitrateKbps,
-          hasAudio: state.activeMicName !== null
-        })
-      : { success: false, error: 'ไม่พบตำแหน่งไฟล์วิดีโอสำหรับการบันทึกนี้' }
-
-    if (!transcode.success) {
-      if (state.dbId) database.markError(state.dbId, transcode.error ?? 'แปลงไฟล์วิดีโอไม่สำเร็จ')
+    // ffmpeg already wrote the final-quality H.264 mp4 directly - no
+    // separate transcode pass anymore (see LiveRecordingService). Only
+    // promote it to the final videoPath after everything below proves it
+    // good, same "never mark complete until verified" rule the old
+    // transcode step followed, just via a rename instead of a re-encode.
+    try {
+      fs.renameSync(capturePath, state.videoPath)
+    } catch (err) {
+      const message = (err as Error).message
+      if (state.dbId) database.markError(state.dbId, message)
       this.writeMetadataFor(stationId, state)
-      logger.error('Recording stop: transcode failed, raw capture preserved', {
+      logger.error('Recording stop: failed to finalize captured file', {
         stationId,
         barcode: state.barcode,
         capturePath,
-        error: transcode.error
+        error: message
       })
       this.setState(stationId, {
         status: 'error',
-        lastError: transcode.error ?? 'แปลงไฟล์วิดีโอไม่สำเร็จ',
+        lastError: message,
         barcode: null,
         startedAt: null,
         elapsedSeconds: 0,
@@ -695,25 +875,44 @@ class StationManager extends EventEmitter {
         activeCameraId: null,
         activeSessionId: null,
         activeBitrateKbps: null,
-        activeMicName: null
+        activeMicName: null,
+        activeWidth: null,
+        activeHeight: null,
+        activeFps: null
       })
       return
     }
 
-    // The file on disk isn't trustworthy just because the transcode exited
-    // 0 - same lesson as the old live-ffmpeg pipeline, just at a different
-    // stage: only actually decoding it proves it's playable.
-    const verification = state.videoPath ? await recordingEngine.verifyRecording(state.videoPath) : null
+    // The file on disk isn't trustworthy just because ffmpeg exited 0 - same
+    // lesson the old pipeline already learned the hard way: only actually
+    // decoding it proves it's playable. Passing the negotiated width/height/
+    // fps lets verifyRecording cross-check what was actually written against
+    // what this capture was started with, instead of only ever trusting the
+    // pre-flight negotiation (see its own doc comment for why that's not the
+    // same guarantee - the negotiation happens before ffmpeg ever opens the
+    // camera).
+    const expectedMode =
+      state.activeWidth !== null && state.activeHeight !== null && state.activeFps !== null
+        ? { width: state.activeWidth, height: state.activeHeight, fps: state.activeFps }
+        : undefined
+    const verification = await recordingEngine.verifyRecording(state.videoPath, expectedMode)
     logger.info('File finalization: recording verified', {
       stationId,
       barcode: state.barcode,
       videoPath: state.videoPath,
-      valid: verification?.valid ?? false,
-      sizeBytes: verification?.sizeBytes ?? 0,
-      durationSeconds: verification?.durationSeconds ?? null
+      valid: verification.valid,
+      sizeBytes: verification.sizeBytes,
+      durationSeconds: verification.durationSeconds,
+      requestedResolution: expectedMode ? `${expectedMode.width}x${expectedMode.height}` : null,
+      requestedFps: expectedMode?.fps ?? null,
+      actualResolution: verification.actualWidth !== null && verification.actualHeight !== null
+        ? `${verification.actualWidth}x${verification.actualHeight}`
+        : null,
+      actualFps: verification.actualFps,
+      actualCodec: verification.actualCodec
     })
 
-    if (verification && !verification.valid) {
+    if (!verification.valid) {
       if (state.dbId) database.markError(state.dbId, verification.error ?? 'ไฟล์วิดีโอเสียหาย')
       this.writeMetadataFor(stationId, state)
       logger.error('Recording stop: file failed verification, not marked as completed', {
@@ -733,21 +932,15 @@ class StationManager extends EventEmitter {
         activeCameraId: null,
         activeSessionId: null,
         activeBitrateKbps: null,
-        activeMicName: null
+        activeMicName: null,
+        activeWidth: null,
+        activeHeight: null,
+        activeFps: null
       })
       return
     }
 
-    // Only delete the raw capture once the final mp4 is proven good -
-    // best-effort, never blocks finishing the recording if cleanup fails.
-    fs.unlink(capturePath, (err) => {
-      if (err) logger.warn('Failed to delete intermediate capture file', { capturePath, error: err.message })
-    })
-
-    let thumbnailPath: string | null = null
-    if (state.videoPath) {
-      thumbnailPath = await recordingEngine.generateThumbnail(state.videoPath)
-    }
+    const thumbnailPath = await recordingEngine.generateThumbnail(state.videoPath)
     if (state.dbId) {
       database.completeRecording(state.dbId, thumbnailPath)
     }
@@ -771,36 +964,31 @@ class StationManager extends EventEmitter {
       activeCameraId: null,
       activeSessionId: null,
       activeBitrateKbps: null,
-      activeMicName: null
+      activeMicName: null,
+      activeWidth: null,
+      activeHeight: null,
+      activeFps: null
     })
   }
 
-  /** Best-effort salvage when the renderer process itself dies mid-recording
-   *  (GPU crash, Chromium bug, OOM) - the one genuine new failure mode this
-   *  architecture accepts, since the live capture leg is renderer-owned (see
-   *  CaptureIngestService's class doc comment). There is definitively no
-   *  renderer left to ever send a final chunk, so this runs the normal stop
-   *  pipeline immediately on every station still actively 'recording' -
-   *  CaptureIngestService.endSession's own timeout fallback finalizes with
-   *  whatever bytes already arrived, and the existing transcode/verify
-   *  failure paths already handle a truncated capture correctly. Stations
-   *  already 'processing' are deliberately left alone here - their own
-   *  in-flight stopRecording() call will hit that same timeout fallback on
-   *  its own; calling stopRecording() a second time concurrently for the
-   *  same station would race it. Called from main/index.ts's
-   *  render-process-gone listener, before the window is recreated. */
+  /** Recording lives entirely in the main process now - ffmpeg opens the
+   *  camera and encodes independently of the renderer (see
+   *  LiveRecordingService), so a renderer crash no longer interrupts an
+   *  in-progress recording at all; it keeps running untouched. The only
+   *  effect a renderer crash has here is that the *live preview* for any
+   *  camera currently locked by an active recording will simply fail to
+   *  reattach when the new renderer window mounts (the existing "preview
+   *  unavailable" UI already handles a failed getUserMedia attach) until the
+   *  recording finishes and the normal previewResume signal fires.
+   *
+   *  Still worth resolving any in-flight preview-release acks immediately
+   *  (rather than letting them sit out their full timeout) since we already
+   *  know for certain no renderer is left to answer them. Called from
+   *  main/index.ts's render-process-gone listener, before the window is
+   *  recreated. */
   handleRendererGone(): void {
-    for (const [stationId, state] of this.states) {
-      if (state.status !== 'recording' || !state.activeSessionId) continue
-      logger.error('Renderer process gone mid-recording, salvaging partial capture', {
-        stationId,
-        sessionId: state.activeSessionId,
-        barcode: state.barcode
-      })
-      this.stopRecording(stationId).catch((err) =>
-        logger.error('Failed to salvage recording after renderer crash', { stationId, error: (err as Error).message })
-      )
-    }
+    for (const resolve of this.pendingPreviewReleaseAcks.values()) resolve()
+    this.pendingPreviewReleaseAcks.clear()
   }
 
   /** Best-effort metadata.json write - skipped silently if the recording
@@ -825,7 +1013,7 @@ class StationManager extends EventEmitter {
   shutdown(): void {
     if (this.tickTimer) clearInterval(this.tickTimer)
     if (this.saveLocationHealthTimer) clearInterval(this.saveLocationHealthTimer)
-    captureIngestService.killAll()
+    liveRecordingService.killAll()
   }
 }
 

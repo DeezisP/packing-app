@@ -151,16 +151,31 @@ function migrateQualityPreset(station: Partial<StationConfig> & { resolutionPres
 // A config saved between v1.7.1 and v1.7.2 has warehouseApi.baseUrl instead
 // of the current warehouseApi.url (the field was renamed once the
 // integration settled on a single, exact endpoint rather than a prefix with
-// paths appended) - read the old name if the new one isn't there yet, so an
-// already-configured URL isn't silently dropped by the rename.
+// paths appended). baseUrl was a PREFIX with `/scan` (or `/scan/confirm`)
+// appended per request at send time (see ApiQueueService's pre-v1.7.3
+// history) - `url` is the exact endpoint with nothing appended, so the
+// rename that introduced `url` copied a legacy baseUrl straight across with
+// no path appended. Worse, `load()` persists the merged config back to disk
+// on every launch, so an affected install has by now had that
+// under-specified value written into `url` itself, not just left sitting in
+// the old `baseUrl` field - fixing only the `baseUrl` fallback wouldn't
+// repair an install that's already been relaunched since. Confirmed against
+// the real external API: the bare prefix (`.../warehouse/mobile`) 401s with
+// "Full authentication is required"; the same prefix + `/scan` (the one
+// path this app ever POSTs to now - see StationManager, the API is only
+// called once, on stop) returns a real 200. Checking the *resulting*
+// candidate URL rather than just the legacy field repairs both the
+// never-migrated case and the already-migrated-wrong case the same way.
 function normalizeWarehouseApi(
   raw: (Partial<WarehouseApiConfig> & { baseUrl?: string }) | undefined,
   fallback: WarehouseApiConfig
 ): WarehouseApiConfig {
   if (!raw) return fallback
+  const candidate = (raw.url ?? raw.baseUrl ?? fallback.url).replace(/\/+$/, '')
+  const url = candidate.endsWith('/warehouse/mobile') ? `${candidate}/scan` : candidate
   return {
     enabled: raw.enabled ?? fallback.enabled,
-    url: raw.url ?? raw.baseUrl ?? fallback.url,
+    url,
     apiKey: raw.apiKey ?? fallback.apiKey,
     scannerUser: raw.scannerUser ?? fallback.scannerUser,
     timeout: raw.timeout ?? fallback.timeout

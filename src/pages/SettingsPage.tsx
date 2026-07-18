@@ -5,6 +5,7 @@ import {
   DEFAULT_QUALITY_PRESET_ID,
   buildCameraDisplayNames,
   isPresetSupported,
+  pickBestQualityPreset,
   API_KEY_PLACEHOLDER
 } from '../../electron/shared/types'
 import { UpdatePanel } from '../components/common/UpdatePanel'
@@ -554,9 +555,18 @@ function WarehouseApiSection({
                 className="flex-1 bg-surface-800/60 border border-white/10 rounded-lg px-3 py-2 text-sm font-mono"
                 autoComplete="off"
               />
-              <AnimatedButton size="sm" onClick={() => setShowKey((v) => !v)}>
-                {showKey ? T.apiKeyHide : T.apiKeyShow}
-              </AnimatedButton>
+              {/* The real stored key never reaches the renderer (see
+                  registerIpcHandlers) - while the field is still showing the
+                  placeholder, there is nothing real for this toggle to
+                  reveal (both states render as dots), so it's hidden rather
+                  than left looking broken. It reappears once the field holds
+                  an actual typed value (after onFocus clears the placeholder
+                  above), where toggling visibility is meaningful again. */}
+              {!keyAlreadyConfigured && (
+                <AnimatedButton size="sm" onClick={() => setShowKey((v) => !v)}>
+                  {showKey ? T.apiKeyHide : T.apiKeyShow}
+                </AnimatedButton>
+              )}
             </div>
             {keyAlreadyConfigured && <p className="text-xs text-slate-500 mt-1">{T.apiKeyAlreadySet}</p>}
           </Field>
@@ -642,6 +652,45 @@ function StationSettingsCard({
     onChange({ qualityPreset: id, fps: preset.fps, bitrateKbps: preset.bitrateKbps })
   }
 
+  // Assigning a (different) camera to this station auto-picks the best mode
+  // that camera can actually deliver - 1080p60 whenever it's genuinely
+  // supported, never just defaulting to 1080p30 - so the operator gets the
+  // best mode out of the box without hunting through the preset dropdown.
+  // Fetched directly here (not via useCameraCapabilities) because that hook
+  // is keyed off the *current* station.cameraId and would also fire on
+  // every normal page load/re-render for an already-configured station,
+  // which must never silently override a preset the user already chose -
+  // this only ever runs at the exact moment the dropdown itself changes.
+  //
+  // Deliberately a *single* onChange call with every field merged together,
+  // not "set cameraId now, patch in the preset once capabilities resolve" -
+  // the parent's updateStation() closes over `draft` at the moment this
+  // component instance rendered, so a second call fired after an `await`
+  // gap reads a stale pre-assignment `draft` and clobbers the first call's
+  // cameraId change entirely (confirmed empirically: the camera assignment
+  // silently reverted to unassigned while the preset change alone stuck).
+  async function selectCamera(id: string | null, camera: CameraDevice | undefined): Promise<void> {
+    if (!id) {
+      onChange({ cameraId: null, cameraName: null })
+      return
+    }
+    let presetPartial: Partial<StationConfig> = {}
+    try {
+      const capabilities = await window.electronAPI.cameras.getCapabilities(id)
+      const bestId = pickBestQualityPreset(capabilities)
+      const preset = QUALITY_PRESETS[bestId]
+      presetPartial = { qualityPreset: bestId, fps: preset.fps, bitrateKbps: preset.bitrateKbps }
+    } catch {
+      // Best-effort - leave whatever preset was already configured rather
+      // than blocking the camera assignment itself on a capability probe.
+    }
+    onChange({ cameraId: id, cameraName: camera?.name ?? null, ...presetPartial })
+  }
+
+  const recommendedPresetId = capabilities !== null ? pickBestQualityPreset(capabilities) : null
+  const recommendedPreset = recommendedPresetId !== null ? QUALITY_PRESETS[recommendedPresetId] : null
+  const best1080p60Unavailable = capabilities !== null && !isPresetSupported(QUALITY_PRESETS['1080p60'], capabilities)
+
   return (
     <motion.div
       layout
@@ -698,7 +747,7 @@ function StationSettingsCard({
             onChange={(e) => {
               const id = e.target.value || null
               const camera = cameras.find((c) => c.id === id)
-              onChange({ cameraId: id, cameraName: camera?.name ?? null })
+              void selectCamera(id, camera)
             }}
             className="w-full bg-surface-800/60 border border-white/10 rounded-lg px-2 py-1.5 text-sm"
           >
@@ -735,10 +784,12 @@ function StationSettingsCard({
             >
               {Object.values(QUALITY_PRESETS).map((preset) => {
                 const supported = capabilities === null || isPresetSupported(preset, capabilities)
+                const recommended = supported && recommendedPresetId === preset.id
                 return (
                   <option key={preset.id} value={preset.id} disabled={!supported}>
                     {preset.label} - {preset.width}×{preset.height} {preset.fps}fps
                     {!supported ? ` (${strings.settings.qualityPresetUnsupportedSuffix})` : ''}
+                    {recommended ? ` (${strings.settings.qualityPresetRecommendedSuffix})` : ''}
                   </option>
                 )
               })}
@@ -748,6 +799,11 @@ function StationSettingsCard({
             </p>
             {currentPresetUnsupported && (
               <p className="text-xs text-warn-500 mt-1">{strings.settings.qualityPresetUnsupportedWarning(currentPreset.label)}</p>
+            )}
+            {!currentPresetUnsupported && best1080p60Unavailable && recommendedPreset && (
+              <p className="text-xs text-slate-500 mt-1">
+                {strings.settings.qualityPresetHighestSupportedHint(recommendedPreset.label)}
+              </p>
             )}
           </Field>
         </div>

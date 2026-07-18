@@ -52,6 +52,71 @@ export function isPresetSupported(preset: QualityPreset, capabilities: readonly 
   return capabilities.some((c) => c.width === preset.width && c.height === preset.height && c.maxFps >= preset.fps - 0.5)
 }
 
+/** Priority order for automatically choosing a station's quality preset when
+ *  a camera is newly assigned - highest frame rate at 1080p first (this
+ *  app's primary "smooth playback" use case), falling back to progressively
+ *  lower-demand modes. 4k30 is deliberately excluded from auto-selection -
+ *  it's a meaningful storage/CPU step up from 1080p that should stay an
+ *  explicit user choice, never something a camera swap silently opts a
+ *  station into. */
+const AUTO_PRESET_PRIORITY: QualityPresetId[] = ['1080p60', '1080p30', '720p30', '480p30']
+
+/** Picks the best quality preset a camera can actually deliver, in
+ *  AUTO_PRESET_PRIORITY order. Used the moment a camera is (re)assigned to a
+ *  station, so it defaults to 1080p60 whenever the camera genuinely supports
+ *  it instead of always landing on DEFAULT_QUALITY_PRESET_ID - never once
+ *  the station already has an explicit preset, since a later manual choice
+ *  (including a deliberate downgrade) must never be silently overwritten.
+ *  Camera-agnostic by construction: this only ever looks at `capabilities`
+ *  (ffmpeg's own DirectShow probe output), never a camera name or id, so it
+ *  works identically for any webcam that exposes 1080p60 - not just the
+ *  EMEET SmartCam S600. An empty capabilities list means detection was
+ *  inconclusive - fails back to DEFAULT_QUALITY_PRESET_ID rather than
+ *  assuming the best case, since claiming "1080p60 works" without evidence
+ *  is worse than a conservative default that's always safe. */
+export function pickBestQualityPreset(capabilities: readonly CameraCapabilityOption[]): QualityPresetId {
+  if (capabilities.length === 0) return DEFAULT_QUALITY_PRESET_ID
+  for (const id of AUTO_PRESET_PRIORITY) {
+    if (isPresetSupported(QUALITY_PRESETS[id], capabilities)) return id
+  }
+  return DEFAULT_QUALITY_PRESET_ID
+}
+
+/** Resolves the actual resolution/fps to record at, given what the station
+ *  is configured to *want*. When the exact requested mode is supported this
+ *  is a no-op (returns the request unchanged, same as today) - the
+ *  interesting case is a camera that genuinely can't do it (different model,
+ *  different driver, only does 4K at 15fps, etc.), where recording used to
+ *  simply refuse to start. Here it instead picks the supported mode closest
+ *  by total pixel count (nearest overall resolution, not just nearest
+ *  width), capping fps at whatever was actually requested even if the
+ *  chosen resolution supports more - this never silently records at a
+ *  higher frame rate than configured. An empty `capabilities` list means
+ *  detection didn't produce anything usable - fails open by returning the
+ *  request unchanged (same rule as isPresetSupported), letting ffmpeg's own
+ *  dshow open be the final arbiter rather than blocking on an inconclusive
+ *  probe. */
+export function resolveRecordingMode(
+  requested: { width: number; height: number; fps: number },
+  capabilities: readonly CameraCapabilityOption[]
+): { width: number; height: number; fps: number } {
+  if (capabilities.length === 0) return requested
+
+  const exact = capabilities.some(
+    (c) => c.width === requested.width && c.height === requested.height && c.maxFps >= requested.fps - 0.5
+  )
+  if (exact) return requested
+
+  const requestedPixels = requested.width * requested.height
+  const closest = capabilities.reduce((best, c) => {
+    const diff = Math.abs(c.width * c.height - requestedPixels)
+    const bestDiff = Math.abs(best.width * best.height - requestedPixels)
+    return diff < bestDiff ? c : best
+  })
+
+  return { width: closest.width, height: closest.height, fps: Math.min(requested.fps, closest.maxFps) }
+}
+
 export interface CameraDevice {
   /** Stable unique identifier - ffmpeg's DirectShow "Alternative name" device
    *  path (e.g. `@device_pnp_\\?\usb#vid_...#{...}\global`) when the driver
@@ -228,8 +293,8 @@ export interface IdentifiedScanner {
 export type OverlayPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
 
 /** Configures the text overlay burned directly into recorded video frames
- *  (via canvas compositing during live capture - see canvasOverlay.ts/
- *  useRecordingCapture.ts in the renderer), and OverlayPreview in the
+ *  (via ffmpeg's drawtext filter during live capture - see
+ *  LiveRecordingService in the main process), and OverlayPreview in the
  *  renderer for the separate WYSIWYG live-preview that mirrors this same
  *  config as a CSS layer. */
 export interface OverlayConfig {
@@ -343,9 +408,10 @@ export function formatHms(totalSeconds: number): string {
 }
 
 /** Shared with formatHms's own reasoning: both the on-screen WYSIWYG overlay
- *  (useOverlayFieldData) and the actual burned-in recording (canvas
- *  compositing, see useRecordingCapture/canvasOverlay) format the current
- *  date/time this same way, so they can never drift from each other. */
+ *  (useOverlayFieldData) and the actual burned-in recording (ffmpeg's
+ *  drawtext filter, fed by LiveRecordingService rewriting a text file once a
+ *  second) format the current date/time this same way, so they can never
+ *  drift from each other. */
 export function formatDateLocal(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
@@ -391,15 +457,15 @@ export interface SearchFilters {
 
 export interface StationRuntimeState {
   stationId: string
-  /** 'processing' covers the window between the renderer's live capture
-   *  ending and the recording being fully usable (webm->mp4 transcode,
-   *  decode verification, thumbnail extraction, DB/metadata write, warehouse
-   *  API enqueue all still running) - see StationManager.stopRecording. Kept
-   *  distinct from 'recording' so the dashboard stops showing a frozen
-   *  elapsed timer for work that's no longer live. The camera's live preview
-   *  is never affected by any of this - see CaptureIngestService/
-   *  useRecordingCapture, the getUserMedia stream is never touched by
-   *  recording start/stop at all. */
+  /** 'processing' covers the window between ffmpeg's live capture ending and
+   *  the recording being fully usable (decode verification, thumbnail
+   *  extraction, DB/metadata write, warehouse API enqueue all still running)
+   *  - see StationManager.stopRecording. Kept distinct from 'recording' so
+   *  the dashboard stops showing a frozen elapsed timer for work that's no
+   *  longer live. The camera's live preview is already back by this point -
+   *  it's handed back the moment ffmpeg's process exits (see
+   *  LiveRecordingService/finalizeStoppedRecording's previewResume emit),
+   *  not held frozen through the rest of this finalization work too. */
   status: 'idle' | 'recording' | 'processing' | 'error'
   barcode: string | null
   cameraName: string | null
@@ -573,49 +639,35 @@ export interface ApiQueueStatus {
   lastSuccessAt: string | null
 }
 
-/** Main -> renderer: tells the station's already-live camera preview (see
- *  useRecordingCapture) to start capturing its own already-open MediaStream
- *  instead of opening a new/competing one - the camera itself is never
- *  reopened or renegotiated. Keyed by `sessionId`, not just `stationId`,
- *  because a new recording can legitimately start for a station whose
- *  previous recording is still `status: 'processing'` (finalizing) - see
- *  StationManager.handleScan/CaptureIngestService's own doc comments. */
-export interface CaptureBeginPayload {
-  sessionId: string
+/** Recording happens entirely in the main process, via ffmpeg opening
+ *  the physical camera directly (see LiveRecordingService) - this UVC camera
+ *  hardware does not support two simultaneous opens (confirmed against real
+ *  hardware), so the renderer's own getUserMedia preview must release the
+ *  device before ffmpeg can claim it, and get it back once ffmpeg is done.
+ *  This is that handshake's request half: main -> renderer, "stop your
+ *  preview's video track(s) for this camera now." The renderer keeps
+ *  `videoRef.current.srcObject` untouched when it does this (only
+ *  `track.stop()`, never clearing `srcObject`), so the `<video>` element
+ *  keeps displaying its last decoded frame - a natural "frozen preview"
+ *  during recording with no extra frame-capture code needed. Acknowledged
+ *  via `requestId` (see CameraPreviewReleaseAck) so the main process knows
+ *  it's actually safe to spawn ffmpeg, instead of racing it. */
+export interface CameraPreviewReleaseRequest {
+  requestId: string
   stationId: string
   cameraId: string
-  micName: string | null
-  preset: { width: number; height: number; fps: number; bitrateKbps: number }
-  /** Null when the overlay is disabled - the renderer then records the raw
-   *  camera track directly instead of compositing through a canvas. */
-  overlay: { config: OverlayConfig; staticData: { barcode: string; station: string; camera: string } } | null
-  startedAt: string
 }
 
-/** Main -> renderer: stop capturing this session. The renderer keeps the
- *  live preview running regardless - this only stops the MediaRecorder. */
-export interface CaptureEndPayload {
-  sessionId: string
+/** Renderer -> main: acknowledges a CameraPreviewReleaseRequest with the same
+ *  requestId once this station's preview track has actually been stopped. */
+export interface CameraPreviewReleaseAck {
+  requestId: string
+}
+
+/** Main -> renderer: the camera is free again (ffmpeg's process has fully
+ *  exited) - safe to re-run getUserMedia and resume the live preview for
+ *  this station's camera. */
+export interface CameraPreviewResumeSignal {
   stationId: string
-}
-
-/** Renderer -> main: one chunk of the live MediaRecorder capture. `final:
- *  true` is sent once, as an empty sentinel, only after MediaRecorder's
- *  `onstop` event fires (which the spec guarantees happens after the last
- *  real `dataavailable`) - see CaptureIngestService.writeChunk. */
-export interface CaptureChunkPayload {
-  sessionId: string
-  seq: number
-  data: ArrayBuffer
-  final: boolean
-}
-
-/** Renderer -> main: the capture session failed to start or continue (mic
- *  device missing, unsupported MediaRecorder mimeType, camera track ended
- *  unexpectedly) - mirrors the old ffmpeg `unexpectedExit` signal so
- *  StationManager's error handling stays the same shape. */
-export interface CaptureErrorPayload {
-  sessionId: string
-  stationId: string
-  message: string
+  cameraId: string
 }

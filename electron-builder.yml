@@ -18,6 +18,19 @@ publish:
   - provider: github
     owner: DeezisP
     repo: packing-app
+    # electron-builder defaults to creating a DRAFT release unless this is
+    # set (see builder-util-runtime's publishOptions.d.ts: "@default draft",
+    # and electron-publish's gitHubPublisher.js, which normally
+    # auto-publishes/un-drafts once every asset upload for the run
+    # finishes) - that follow-up step didn't complete for v1.7.9 (four rapid
+    # back-to-back releases in one session), leaving it stuck as a draft:
+    # invisible on the public releases page, no real git tag, every direct
+    # download link 404s, and auto-update simply can't see it. `draft:
+    # false` is NOT a recognized property in this electron-builder
+    # version's config schema (confirmed - it fails validation outright);
+    # `releaseType: release` is the actual supported knob and skips the
+    # draft state entirely instead of depending on that follow-up step.
+    releaseType: release
 win:
   target:
     - target: nsis

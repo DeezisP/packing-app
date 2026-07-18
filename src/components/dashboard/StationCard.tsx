@@ -1,10 +1,9 @@
-import { memo, useRef } from 'react'
+import { memo } from 'react'
 import { GlassPanel } from '../common/GlassPanel'
 import { CameraPreview } from '../common/CameraPreview'
 import { DeviceStatus } from '../common/DeviceStatus'
 import { RecordingStatus } from '../common/RecordingStatus'
 import { useOverlayFieldData } from '../../hooks/useOverlayFieldData'
-import { useRecordingCapture } from '../../hooks/useRecordingCapture'
 import { OverlayPreview } from '../common/OverlayPreview'
 import { strings } from '../../lib/strings'
 import { resolveStationCameraId, QUALITY_PRESETS } from '../../../electron/shared/types'
@@ -31,13 +30,6 @@ function StationCardImpl({ station, state, overlayConfig, cameras, isActive, hot
   const resolvedCameraId = resolveStationCameraId(station, cameras)
   const cameraDisplayName = state?.cameraName ?? station.cameraName ?? strings.common.notAssigned
   const preset = QUALITY_PRESETS[station.qualityPreset]
-
-  // Shared with useRecordingCapture, which draws frames directly from this
-  // exact <video> element for the recording pipeline - the element itself
-  // is never touched by recording start/stop, see CameraPreview's doc
-  // comment.
-  const videoRef = useRef<HTMLVideoElement>(null)
-  useRecordingCapture(station.id, videoRef)
 
   return (
     <GlassPanel
@@ -66,7 +58,7 @@ function StationCardImpl({ station, state, overlayConfig, cameras, isActive, hot
       <CameraPreview
         cameraId={resolvedCameraId}
         cameras={cameras}
-        videoRef={videoRef}
+        stationId={station.id}
         preset={{ width: preset.width, height: preset.height, fps: station.fps }}
         configured={hasCameraConfigured}
         overlay={hasCameraConfigured ? <OverlayPreview config={overlayConfig} data={overlayData} /> : undefined}

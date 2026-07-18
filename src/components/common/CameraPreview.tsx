@@ -11,17 +11,17 @@ interface CameraPreviewProps {
   /** The current full camera list - needed to disambiguate identical-name
    *  devices when matching the browser's own getUserMedia device list. */
   cameras: CameraDevice[]
-  /** Lets a parent (StationCard) share this exact <video> element with
-   *  useRecordingCapture, which draws frames directly from it for the
-   *  overlay-compositing recording path - see useRecordingCapture.ts. Falls
-   *  back to an internally-owned ref when not provided (e.g. TestCameraModal,
-   *  which never records). */
-  videoRef?: React.RefObject<HTMLVideoElement>
   /** The station's configured quality preset, requested as `ideal`
-   *  getUserMedia constraints - see useCameraPreview's own doc comment for
-   *  why the preview itself now needs to know this. Omitted for a preview
-   *  not tied to a specific station (e.g. TestCameraModal). */
+   *  getUserMedia constraints - a live-preview quality hint only; recording
+   *  itself is ffmpeg's own independent dshow capture (see
+   *  LiveRecordingService). Omitted for a preview not tied to a specific
+   *  station (e.g. TestCameraModal). */
   preset?: { width: number; height: number; fps: number }
+  /** Station this preview belongs to - only provided by StationCard, whose
+   *  preview can be recorded and therefore needs to answer the main
+   *  process's camera release/resume handshake (see useCameraPreview's own
+   *  doc comment). Omitted by previews that never record (TestCameraModal). */
+  stationId?: string
   /** Whether a camera is assigned in config at all, independent of live
    *  connectivity - drives the "no camera assigned" placeholder. Defaults to
    *  Boolean(cameraId), which is correct when the caller already knows the
@@ -38,27 +38,30 @@ interface CameraPreviewProps {
  *  "no camera / preview unavailable" states. Used by StationCard and
  *  TestCameraModal so the preview wiring only exists in one place.
  *
- *  This <video> element is never touched by recording start/stop - there is
- *  no placeholder, no swap, no reconnect. Recording captures this same
- *  already-live stream instead of competing for the camera - see
- *  useCameraPreview/useRecordingCapture. */
+ *  While a recording is active, ffmpeg holds this camera exclusively (see
+ *  LiveRecordingService) - the `<video>` element keeps showing its last
+ *  decoded frame during that window (useCameraPreview stops the track
+ *  without clearing `srcObject`), which is what gives the "frozen preview +
+ *  Recording badge" look during recording with no special-casing needed
+ *  here; StationCard's existing `RecordingStatus` overlay already supplies
+ *  the badge. */
 export function CameraPreview({
   cameraId,
   cameras,
-  videoRef,
   preset,
+  stationId,
   configured,
   overlay,
   placeholderText,
   className,
   children
 }: CameraPreviewProps): JSX.Element {
-  const { videoRef: internalVideoRef, error } = useCameraPreview(cameraId, cameras, videoRef, preset)
+  const { videoRef, error } = useCameraPreview(cameraId, cameras, undefined, preset, stationId)
   const isConfigured = configured ?? Boolean(cameraId)
 
   return (
     <div className={`relative aspect-video bg-black overflow-hidden ${className ?? ''}`}>
-      <video ref={internalVideoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
+      <video ref={videoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
       {overlay}
       {!isConfigured && (
         <div className="absolute inset-0 flex items-center justify-center text-zinc-400 text-sm">

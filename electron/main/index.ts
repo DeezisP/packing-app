@@ -13,6 +13,7 @@ import { rawInputService } from './services/RawInputService'
 import { stationManager } from './services/StationManager'
 import { updateService } from './services/UpdateService'
 import { apiQueueService } from './services/ApiQueueService'
+import { recordingEngine } from './services/RecordingEngine'
 
 const AUTO_UPDATE_CHECK_DELAY_MS = 8000
 
@@ -51,6 +52,19 @@ if (!singleInstanceLock) {
     registerMediaProtocol()
     registerIpcHandlers()
 
+    // Hardware detection up front, not just lazily on the first recording -
+    // a missing/broken ffmpeg install surfaces as one clear, early log entry
+    // instead of only failing the moment an operator scans a barcode, and
+    // the encoder probe (a real, multi-second GPU encode attempt per
+    // candidate - see RecordingEngine.detectEncoder) is already done by the
+    // time anyone actually starts recording. Neither blocks window creation
+    // or app startup - a machine with no camera/ffmpeg configured yet still
+    // launches normally; recording just won't work until that's fixed,
+    // reported per-attempt with a clear message like every other expected
+    // failure in this app.
+    void recordingEngine.verifyFfmpegAvailable()
+    void recordingEngine.detectEncoder()
+
     updateService.init()
     Menu.setApplicationMenu(buildAppMenu())
     if (app.isPackaged) {
@@ -67,14 +81,13 @@ if (!singleInstanceLock) {
     // only happen after the window exists - unlike the other services above.
     rawInputService.init(mainWindow)
 
-    // The live camera capture (and, mid-recording, its encode) now lives in
-    // the renderer process (see CaptureIngestService's class doc comment) -
-    // a renderer crash can therefore actually interrupt an in-progress
-    // recording, which was never possible when ffmpeg owned it as an
-    // independent OS process. Salvage whatever was captured so far instead
-    // of silently losing it, then bring the app back instead of leaving it
-    // dead - and re-register Raw Input against the new window, since that
-    // registration is tied to a specific native window handle.
+    // Live camera capture is owned entirely by ffmpeg in this process now
+    // (see LiveRecordingService), so a renderer crash never interrupts an
+    // in-progress recording - only the live *preview* is affected, and that
+    // self-heals once the new window mounts. Bring the app back instead of
+    // leaving it dead either way, and re-register Raw Input against the new
+    // window, since that registration is tied to a specific native window
+    // handle.
     mainWindow.webContents.on('render-process-gone', (_event, details) => {
       logger.error('Renderer process gone', { reason: details.reason, exitCode: details.exitCode })
       stationManager.handleRendererGone()

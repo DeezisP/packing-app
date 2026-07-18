@@ -9,7 +9,6 @@ import { scannerManager } from '../services/ScannerManager'
 import { rawInputService } from '../services/RawInputService'
 import { stationManager } from '../services/StationManager'
 import { recordingEngine } from '../services/RecordingEngine'
-import { captureIngestService } from '../services/CaptureIngestService'
 import { updateService } from '../services/UpdateService'
 import { apiQueueService } from '../services/ApiQueueService'
 import { logger } from '../services/Logger'
@@ -20,14 +19,7 @@ import { resolveFfmpegPath } from '../services/FfmpegLocator'
 import { listWindowsCameras } from '../services/WindowsDeviceService'
 import { checkFileForPlayback } from '../services/MediaProtocol'
 import { API_KEY_PLACEHOLDER } from '@shared/types'
-import type {
-  AppConfig,
-  SearchFilters,
-  DiagnosticsStationAssignment,
-  LogEntry,
-  CaptureChunkPayload,
-  CaptureErrorPayload
-} from '@shared/types'
+import type { AppConfig, SearchFilters, DiagnosticsStationAssignment, LogEntry } from '@shared/types'
 
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -133,11 +125,11 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.camerasGetCapabilities, (_e, cameraId: string) => cameraManager.getCapabilities(cameraId))
 
-  // One-way, not invoke - see CaptureIngestService/useRecordingCapture. The
-  // live camera preview itself is never involved in any of this.
-  ipcMain.on(IPC.recordingChunk, (_e, payload: CaptureChunkPayload) => captureIngestService.writeChunk(payload))
-  ipcMain.on(IPC.recordingCaptureError, (_e, payload: CaptureErrorPayload) =>
-    captureIngestService.reportCaptureError(payload.sessionId, payload.stationId, payload.message)
+  // One-way, not invoke - the renderer's ack that it has released a
+  // station's camera track, see CameraPreviewReleaseRequest/
+  // StationManager.requestPreviewRelease.
+  ipcMain.on(IPC.recordingPreviewReleaseAck, (_e, payload: { requestId: string }) =>
+    stationManager.resolvePreviewReleaseAck(payload.requestId)
   )
 
   // Gathers every independent camera-detection source (ffmpeg/DirectShow,
@@ -280,8 +272,8 @@ export function registerIpcHandlers(): void {
   stationManager.on('saveLocationStatus', (status) => broadcast(IPC.configOnSaveLocationStatus, status))
   stationManager.on('validationChanged', (issues) => broadcast(IPC.stationOnValidationChanged, issues))
   cameraManager.on('changed', (payload) => broadcast(IPC.cameraOnListChanged, payload))
-  stationManager.on('captureStart', (payload) => broadcast(IPC.recordingBeginCapture, payload))
-  stationManager.on('captureStop', (payload) => broadcast(IPC.recordingEndCapture, payload))
+  stationManager.on('previewReleaseRequest', (payload) => broadcast(IPC.recordingPreviewRelease, payload))
+  stationManager.on('previewResume', (payload) => broadcast(IPC.recordingPreviewResume, payload))
   scannerManager.on('changed', (devices) => broadcast(IPC.scannersOnListChanged, devices))
   rawInputService.on('keydown', (payload) => broadcast(IPC.scannersOnRawKeydown, payload))
   logger.on('entry', (entry) => broadcast(IPC.systemOnLogEntry, entry))

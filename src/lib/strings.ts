@@ -217,6 +217,9 @@ export const strings = {
     qualityPresetUnsupportedSuffix: 'กล้องไม่รองรับ',
     qualityPresetUnsupportedWarning: (preset: string): string =>
       `กล้องที่กำหนดให้สถานีนี้ไม่รองรับคุณภาพ "${preset}" - เลือกคุณภาพอื่นที่กล้องรองรับ ระบบจะไม่เปลี่ยนความละเอียดให้อัตโนมัติ`,
+    qualityPresetRecommendedSuffix: 'แนะนำ',
+    qualityPresetHighestSupportedHint: (highest: string): string =>
+      `กล้องนี้ไม่รองรับ 1080p 60fps - โหมดสูงสุดที่รองรับคือ "${highest}"`,
     saveLocationOverride: 'โฟลเดอร์บันทึกของสถานีนี้',
     useGlobalSaveLocation: 'ใช้โฟลเดอร์บันทึกส่วนกลาง',
     customSaveLocationPlaceholder: 'เช่น D:\\StationVideos',
