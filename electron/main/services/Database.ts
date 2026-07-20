@@ -161,29 +161,56 @@ class DatabaseService {
   private openWithFallback(SQL: Awaited<ReturnType<typeof initSqlJs>>): SqlJsDatabase {
     const primaryBytes = this.readDatabaseFile(defaultPaths.databaseFile)
     if (primaryBytes) {
-      try {
-        return new SQL.Database(primaryBytes)
-      } catch (err) {
-        logger.error('database.sqlite exists but failed to open - trying backup', { error: (err as Error).message })
-      }
+      const db = this.tryOpen(SQL, primaryBytes)
+      if (db) return db
+      logger.error('database.sqlite exists but is not a valid database - trying backup')
     }
 
     const backupBytes = this.readDatabaseFile(defaultPaths.databaseBackupFile)
     if (backupBytes) {
-      try {
-        const db = new SQL.Database(backupBytes)
+      const db = this.tryOpen(SQL, backupBytes)
+      if (db) {
         logger.warn('database.sqlite missing or unreadable - restored recording history from backup', {
           backup: defaultPaths.databaseBackupFile
         })
         return db
-      } catch (err) {
-        logger.error('Backup database also failed to open - starting a fresh, empty database', {
-          error: (err as Error).message
-        })
       }
+      logger.error('Backup database also failed to open - starting a fresh, empty database')
     }
 
     return new SQL.Database()
+  }
+
+  /** Both constructing the Database AND actually querying it. Confirmed via
+   *  a real production crash: sql.js's `new SQL.Database(bytes)` does NOT
+   *  validate the SQLite file header - a buffer that isn't a valid SQLite
+   *  file (corrupted, truncated, or something else entirely landed at that
+   *  path) constructs successfully with no error, and only fails once a
+   *  real page read happens. That meant this whole fallback mechanism never
+   *  actually caught a corrupt primary file: `openWithFallback` returned
+   *  what looked like a working Database, and the *real* "file is not a
+   *  database" failure only surfaced later at `this.db.run(SCHEMA)` in
+   *  init() - outside any try/catch - crashing the entire app at startup
+   *  instead of falling back to the backup this mechanism exists to
+   *  provide. A cheap real read against sqlite_master (a system table every
+   *  valid SQLite file has, empty or not) forces that validation to happen
+   *  here, inside the fallback's own try/catch, rather than wherever the
+   *  caller's first real query happens to land. */
+  private tryOpen(SQL: Awaited<ReturnType<typeof initSqlJs>>, bytes: Buffer): SqlJsDatabase | null {
+    let db: SqlJsDatabase | null = null
+    try {
+      db = new SQL.Database(bytes)
+      db.run('SELECT 1 FROM sqlite_master LIMIT 1')
+      return db
+    } catch (err) {
+      logger.error('Database file failed validation', { error: (err as Error).message })
+      // The constructor itself can throw (db stays null, nothing to close)
+      // or the validation query can throw on an already-constructed db
+      // (leaves a WASM-backed object that's about to be discarded) - only
+      // the second case has anything to free.
+      db?.close()
+      return null
+    }
   }
 
   private readDatabaseFile(filePath: string): Buffer | null {
