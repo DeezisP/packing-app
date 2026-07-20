@@ -9,6 +9,7 @@ import { scannerManager } from '../services/ScannerManager'
 import { rawInputService } from '../services/RawInputService'
 import { stationManager } from '../services/StationManager'
 import { recordingEngine } from '../services/RecordingEngine'
+import { persistentCaptureService } from '../services/PersistentCaptureService'
 import { updateService } from '../services/UpdateService'
 import { apiQueueService } from '../services/ApiQueueService'
 import { logger } from '../services/Logger'
@@ -19,7 +20,7 @@ import { resolveFfmpegPath } from '../services/FfmpegLocator'
 import { listWindowsCameras } from '../services/WindowsDeviceService'
 import { checkFileForPlayback } from '../services/MediaProtocol'
 import { API_KEY_PLACEHOLDER } from '@shared/types'
-import type { AppConfig, SearchFilters, DiagnosticsStationAssignment, LogEntry } from '@shared/types'
+import type { AppConfig, SearchFilters, DiagnosticsStationAssignment, LogEntry, CaptureStatus, FragmentTiming } from '@shared/types'
 
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -125,12 +126,15 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.camerasGetCapabilities, (_e, cameraId: string) => cameraManager.getCapabilities(cameraId))
 
-  // One-way, not invoke - the renderer's ack that it has released a
-  // station's camera track, see CameraPreviewReleaseRequest/
-  // StationManager.requestPreviewRelease.
-  ipcMain.on(IPC.recordingPreviewReleaseAck, (_e, payload: { requestId: string }) =>
-    stationManager.resolvePreviewReleaseAck(payload.requestId)
-  )
+  // Lets a hook that mounts *after* a camera's persistent capture already
+  // started catch up immediately: whether it's active, plus the cached
+  // ftyp+moov init segment needed before any subsequent fragment (from
+  // capture:onChunk) can be appended to a MediaSource SourceBuffer.
+  ipcMain.handle(IPC.captureGetStatus, (_e, cameraId: string) => {
+    const active = persistentCaptureService.isActive(cameraId)
+    const initSegment = active ? persistentCaptureService.getInitSegment(cameraId) : null
+    return { active, initSegment: initSegment ? new Uint8Array(initSegment) : null }
+  })
 
   // Gathers every independent camera-detection source (ffmpeg/DirectShow,
   // Windows PnP) plus current station assignments and recent logs in one
@@ -272,8 +276,16 @@ export function registerIpcHandlers(): void {
   stationManager.on('saveLocationStatus', (status) => broadcast(IPC.configOnSaveLocationStatus, status))
   stationManager.on('validationChanged', (issues) => broadcast(IPC.stationOnValidationChanged, issues))
   cameraManager.on('changed', (payload) => broadcast(IPC.cameraOnListChanged, payload))
-  stationManager.on('previewReleaseRequest', (payload) => broadcast(IPC.recordingPreviewRelease, payload))
-  stationManager.on('previewResume', (payload) => broadcast(IPC.recordingPreviewResume, payload))
+  // Live capture relay - see PersistentCaptureService. 'chunk' fires once
+  // per encoded fragment (multiple times per second per active camera), so
+  // this is deliberately the cheapest possible path from service event to
+  // renderer send, no extra bookkeeping in between.
+  persistentCaptureService.on(
+    'chunk',
+    ({ cameraId, kind, data, timing }: { cameraId: string; kind: 'fragment'; data: Buffer; timing?: FragmentTiming }) =>
+      broadcast(IPC.captureOnChunk, { cameraId, kind, data: new Uint8Array(data), timing })
+  )
+  persistentCaptureService.on('statusChanged', (payload: CaptureStatus) => broadcast(IPC.captureOnStatusChanged, payload))
   scannerManager.on('changed', (devices) => broadcast(IPC.scannersOnListChanged, devices))
   rawInputService.on('keydown', (payload) => broadcast(IPC.scannersOnRawKeydown, payload))
   logger.on('entry', (entry) => broadcast(IPC.systemOnLogEntry, entry))

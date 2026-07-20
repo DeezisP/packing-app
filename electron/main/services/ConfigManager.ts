@@ -1,3 +1,4 @@
+import { app } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { EventEmitter } from 'node:events'
@@ -17,8 +18,24 @@ class ConfigManager extends EventEmitter {
   }
 
   private readDefault(): AppConfig {
-    const raw = fs.readFileSync(defaultPaths.configDefaultFile, 'utf-8')
-    return JSON.parse(raw) as AppConfig
+    try {
+      const raw = fs.readFileSync(defaultPaths.configDefaultFile, 'utf-8')
+      return JSON.parse(raw) as AppConfig
+    } catch (err) {
+      // Runs at module-import time, before app.whenReady() and before Logger
+      // is initialized - nothing else in the process can catch or log this,
+      // so write directly to a fixed location as the only trace this leaves
+      // behind before rethrowing (there's no sane default to fall back to).
+      try {
+        fs.appendFileSync(
+          path.join(app.getPath('temp'), 'packing-recorder-startup-crash.log'),
+          `[${new Date().toISOString()}] readDefault failed: ${(err as Error).stack}\n`
+        )
+      } catch {
+        // best-effort - if even this fails, there is nowhere left to report to
+      }
+      throw err
+    }
   }
 
   private load(): AppConfig {
@@ -84,7 +101,14 @@ class ConfigManager extends EventEmitter {
 
   private writeConfigFiles(config: AppConfig): void {
     const json = JSON.stringify(config, null, 2)
-    fs.writeFileSync(defaultPaths.configFile, json)
+    try {
+      fs.writeFileSync(defaultPaths.configFile, json)
+    } catch (err) {
+      logger.error('Failed to write primary config.json', {
+        path: defaultPaths.configFile,
+        error: (err as Error).message
+      })
+    }
     try {
       fs.mkdirSync(path.dirname(defaultPaths.configBackupFile), { recursive: true })
       fs.writeFileSync(defaultPaths.configBackupFile, json)
@@ -125,6 +149,7 @@ class ConfigManager extends EventEmitter {
 
   ensureDirectories(): void {
     fs.mkdirSync(this.getResolvedSaveLocation(), { recursive: true })
+    fs.mkdirSync(defaultPaths.captureCacheDir, { recursive: true })
   }
 }
 

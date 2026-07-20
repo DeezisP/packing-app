@@ -1,8 +1,14 @@
-import { BrowserWindow, session, shell } from 'electron'
+import { BrowserWindow, session, shell, dialog } from 'electron'
 import { is } from '@electron-toolkit/utils'
 import path from 'node:path'
 import { logger } from '../services/Logger'
 import { defaultPaths } from '../services/PathService'
+
+/** If the renderer never reaches 'ready-to-show' within this long, something
+ *  is silently wrong (missing/corrupted renderer bundle, a hung preload) -
+ *  without this, the BrowserWindow exists but never becomes visible, with no
+ *  error and no trace of why. */
+const SHOW_TIMEOUT_MS = 15000
 
 export function createMainWindow(): BrowserWindow {
   // This is a trusted, fully offline kiosk app - webcam access is core to its
@@ -41,7 +47,27 @@ export function createMainWindow(): BrowserWindow {
     }
   })
 
-  win.once('ready-to-show', () => win.show())
+  // Fires when loadURL/loadFile below fails outright (missing/corrupted
+  // renderer bundle, a hung/crashed preload) - without this, that failure
+  // means 'ready-to-show' simply never fires and the window sits invisible
+  // forever with no error and no trace of why anywhere.
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    logger.error('Renderer failed to load', { errorCode, errorDescription, validatedURL })
+    dialog.showErrorBox(
+      'PackingRecorder failed to load its interface',
+      `${errorDescription} (${errorCode})\n${validatedURL}`
+    )
+  })
+
+  const showTimeout = setTimeout(() => {
+    logger.error('Window never became ready to show within timeout - renderer likely hung or failed silently', {
+      timeoutMs: SHOW_TIMEOUT_MS
+    })
+  }, SHOW_TIMEOUT_MS)
+  win.once('ready-to-show', () => {
+    clearTimeout(showTimeout)
+    win.show()
+  })
 
   // Surfaces renderer-side errors (failed IPC calls, camera preview issues) into
   // Logs/app.log so operators don't need to open DevTools to diagnose problems.
@@ -59,10 +85,13 @@ export function createMainWindow(): BrowserWindow {
     return { action: 'deny' }
   })
 
+  // did-fail-load above already logs/surfaces the failure itself - these
+  // .catch() handlers exist only to prevent a redundant unhandled-rejection
+  // warning from the returned promise, not to duplicate that reporting.
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    win.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    win.loadURL(process.env['ELECTRON_RENDERER_URL']).catch(() => undefined)
   } else {
-    win.loadFile(path.join(__dirname, '../renderer/index.html'))
+    win.loadFile(path.join(__dirname, '../renderer/index.html')).catch(() => undefined)
   }
 
   return win

@@ -3,28 +3,27 @@ import { GlassPanel } from '../common/GlassPanel'
 import { CameraPreview } from '../common/CameraPreview'
 import { DeviceStatus } from '../common/DeviceStatus'
 import { RecordingStatus } from '../common/RecordingStatus'
-import { useOverlayFieldData } from '../../hooks/useOverlayFieldData'
-import { OverlayPreview } from '../common/OverlayPreview'
 import { strings } from '../../lib/strings'
 import { resolveStationCameraId, QUALITY_PRESETS } from '../../../electron/shared/types'
-import type { StationConfig, StationRuntimeState, OverlayConfig, CameraDevice } from '../../../electron/shared/types'
+import type { StationConfig, StationRuntimeState, CameraDevice } from '../../../electron/shared/types'
 
 interface Props {
   station: StationConfig
   state: StationRuntimeState | undefined
-  overlayConfig: OverlayConfig
   cameras: CameraDevice[]
   isActive: boolean
   hotkey: number
   onSetActive: () => void
 }
 
-/** One packing station's live card: camera feed (with burned-overlay
- *  preview), scanner/camera pairing status, and the current barcode/timer.
- *  Dashboard renders one of these per entry in config.stations - nothing
- *  here assumes a fixed station count or a specific station id. */
-function StationCardImpl({ station, state, overlayConfig, cameras, isActive, hotkey, onSetActive }: Props): JSX.Element {
-  const overlayData = useOverlayFieldData(station, state)
+/** One packing station's live card: camera feed (with the overlay already
+ *  burned in by the same encode the live feed itself is - see
+ *  PersistentCaptureService and useLiveCapturePreview - so there is no
+ *  separate client-side overlay layer to keep in sync with it anymore),
+ *  scanner/camera pairing status, and the current barcode/timer. Dashboard
+ *  renders one of these per entry in config.stations - nothing here assumes
+ *  a fixed station count or a specific station id. */
+function StationCardImpl({ station, state, cameras, isActive, hotkey, onSetActive }: Props): JSX.Element {
   const status = state?.status ?? 'idle'
   const hasCameraConfigured = Boolean(station.cameraId || station.cameraName)
   const resolvedCameraId = resolveStationCameraId(station, cameras)
@@ -58,10 +57,10 @@ function StationCardImpl({ station, state, overlayConfig, cameras, isActive, hot
       <CameraPreview
         cameraId={resolvedCameraId}
         cameras={cameras}
-        stationId={station.id}
         preset={{ width: preset.width, height: preset.height, fps: station.fps }}
+        allowGetUserMediaFallback={false}
         configured={hasCameraConfigured}
-        overlay={hasCameraConfigured ? <OverlayPreview config={overlayConfig} data={overlayData} /> : undefined}
+        showLatencyDebug
       >
         {state && !state.cameraConnected && hasCameraConfigured && (
           <div className="absolute top-2 left-2 bg-rec-600/90 text-white text-xs px-2 py-1 rounded-full">

@@ -28,13 +28,14 @@ export const IPC = {
   cameraOnListChanged: 'cameras:onListChanged',
   camerasGetCapabilities: 'cameras:getCapabilities',
 
-  // Recording capture - ffmpeg (LiveRecordingService) owns the camera
-  // directly during recording; this is just the release/resume handshake so
-  // the renderer's own getUserMedia preview hands the device off cleanly and
-  // gets it back - see CameraPreviewReleaseRequest's doc comment.
-  recordingPreviewRelease: 'recording:previewRelease',
-  recordingPreviewReleaseAck: 'recording:previewReleaseAck',
-  recordingPreviewResume: 'recording:previewResume',
+  // Persistent camera capture (PersistentCaptureService) - a single ffmpeg
+  // process per camera, opened once and never released, whose live H.264
+  // output is relayed to the renderer for MSE playback instead of the
+  // renderer ever calling getUserMedia on an owned camera. See CaptureStatus/
+  // CaptureChunk in shared/types.ts.
+  captureGetStatus: 'capture:getStatus',
+  captureOnStatusChanged: 'capture:onStatusChanged',
+  captureOnChunk: 'capture:onChunk',
 
   // Diagnostics
   diagnosticsGet: 'diagnostics:get',

@@ -102,7 +102,8 @@ export const strings = {
   },
 
   camera: {
-    previewUnavailable: (err: string): string => `พรีวิวใช้งานไม่ได้: ${err}`
+    previewUnavailable: (err: string): string => `พรีวิวใช้งานไม่ได้: ${err}`,
+    connecting: 'กำลังเชื่อมต่อกล้อง...'
   },
 
   videoPlayer: {

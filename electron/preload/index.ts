@@ -22,8 +22,8 @@ import type {
   WarehouseApiConfig,
   WarehouseApiTestResult,
   PlaybackPreflightResult,
-  CameraPreviewReleaseRequest,
-  CameraPreviewResumeSignal
+  CaptureStatus,
+  CaptureChunk
 } from '@shared/types'
 
 const api = {
@@ -98,28 +98,29 @@ const api = {
     getCapabilities: (cameraId: string): Promise<CameraCapabilityOption[]> =>
       ipcRenderer.invoke(IPC.camerasGetCapabilities, cameraId)
   },
-  /** Recording now happens entirely in the main process (ffmpeg opens the
-   *  camera directly - see LiveRecordingService); this is purely the
-   *  release/resume handshake for the renderer's own getUserMedia preview,
-   *  which must hand the physical device off to ffmpeg during recording and
-   *  take it back afterward - see CameraPreviewReleaseRequest's doc comment
-   *  in shared/types.ts. */
+  /** A camera under a persistent capture session (see
+   *  PersistentCaptureService) is never opened by the renderer's own
+   *  getUserMedia at all - the renderer instead plays the same encoded H.264
+   *  stream ffmpeg is already producing, via Media Source Extensions (see
+   *  useLiveCapturePreview). `getStatus` covers a hook mounting after
+   *  capture already started (returns the cached init segment to seed a new
+   *  SourceBuffer); `onStatusChanged`/`onChunk` cover everything live after
+   *  that. */
   capture: {
-    onPreviewRelease: (cb: (payload: CameraPreviewReleaseRequest) => void) => {
-      const listener = (_e: Electron.IpcRendererEvent, payload: CameraPreviewReleaseRequest): void => cb(payload)
-      ipcRenderer.on(IPC.recordingPreviewRelease, listener)
+    getStatus: (cameraId: string): Promise<CaptureStatus & { initSegment: Uint8Array | null }> =>
+      ipcRenderer.invoke(IPC.captureGetStatus, cameraId),
+    onStatusChanged: (cb: (status: CaptureStatus) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, status: CaptureStatus): void => cb(status)
+      ipcRenderer.on(IPC.captureOnStatusChanged, listener)
       return (): void => {
-        ipcRenderer.removeListener(IPC.recordingPreviewRelease, listener)
+        ipcRenderer.removeListener(IPC.captureOnStatusChanged, listener)
       }
     },
-    acknowledgePreviewRelease: (requestId: string): void => {
-      ipcRenderer.send(IPC.recordingPreviewReleaseAck, { requestId })
-    },
-    onPreviewResume: (cb: (payload: CameraPreviewResumeSignal) => void) => {
-      const listener = (_e: Electron.IpcRendererEvent, payload: CameraPreviewResumeSignal): void => cb(payload)
-      ipcRenderer.on(IPC.recordingPreviewResume, listener)
+    onChunk: (cb: (chunk: CaptureChunk) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, chunk: CaptureChunk): void => cb(chunk)
+      ipcRenderer.on(IPC.captureOnChunk, listener)
       return (): void => {
-        ipcRenderer.removeListener(IPC.recordingPreviewResume, listener)
+        ipcRenderer.removeListener(IPC.captureOnChunk, listener)
       }
     }
   },

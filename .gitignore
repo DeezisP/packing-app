@@ -8,6 +8,8 @@ Videos/*
 !Videos/.gitkeep
 Logs/*
 !Logs/.gitkeep
+CaptureCache/*
+!CaptureCache/.gitkeep
 database.sqlite
 database.sqlite-journal
 database.sqlite-wal

@@ -10,11 +10,13 @@
  *  by itself either. Matching on a name-boundary prefix handles both: it
  *  still requires the base name to match exactly (not just contain it
  *  anywhere), so it can't accidentally match an unrelated device whose name
- *  happens to start the same way. Used by useCameraPreview's live-preview
- *  camera matching, which goes through Chromium's getUserMedia and so faces
- *  this label quirk directly - mic/camera resolution for the actual
- *  recording goes through ffmpeg's own dshow device listing instead (see
- *  LiveRecordingService), which has no equivalent mismatch to work around. */
+ *  happens to start the same way. Used by useCameraPreview's getUserMedia
+ *  fallback path (a camera with no active persistent capture session, e.g.
+ *  a spare one being tested in Settings), which goes through Chromium's
+ *  getUserMedia and so faces this label quirk directly - camera resolution
+ *  for a persistently-captured camera goes through ffmpeg's own dshow
+ *  device listing instead (see PersistentCaptureService), which has no
+ *  equivalent mismatch to work around. */
 export function labelMatchesDeviceName(label: string, name: string): boolean {
   return label === name || label.startsWith(`${name} (`)
 }

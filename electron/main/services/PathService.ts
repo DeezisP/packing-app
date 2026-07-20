@@ -34,6 +34,11 @@ export const defaultPaths = {
   databaseFile: path.join(appRoot, 'database.sqlite'),
   logsDir: path.join(appRoot, 'Logs'),
   videosDir: path.join(appRoot, 'Videos'),
+  // Rolling segment archive for PersistentCaptureService's continuous
+  // per-camera capture - scratch space, never shown to the operator and
+  // never confused with the real Videos/ output a finished recording lands
+  // in (see finalizeRecording's stream-copy trim/concat).
+  captureCacheDir: path.join(appRoot, 'CaptureCache'),
   ffmpegBinary: app.isPackaged
     ? path.join(process.resourcesPath, 'ffmpeg', 'ffmpeg.exe')
     : null, // resolved from the ffmpeg-static package in dev, see FfmpegLocator

@@ -292,11 +292,13 @@ export interface IdentifiedScanner {
 
 export type OverlayPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
 
-/** Configures the text overlay burned directly into recorded video frames
- *  (via ffmpeg's drawtext filter during live capture - see
- *  LiveRecordingService in the main process), and OverlayPreview in the
- *  renderer for the separate WYSIWYG live-preview that mirrors this same
- *  config as a CSS layer. */
+/** Configures the text overlay burned directly into every frame of a
+ *  camera's continuous capture (via ffmpeg's drawtext filter - see
+ *  PersistentCaptureService in the main process) - the Dashboard's live
+ *  preview *is* this same encoded stream (see useCameraPreview), so there is
+ *  no separate client-side overlay layer to keep in sync with it anymore.
+ *  Settings still uses OverlayPreview as a CSS-layer WYSIWYG editor preview
+ *  (sample data, not a real camera feed) when editing this config. */
 export interface OverlayConfig {
   enabled: boolean
   showBarcode: boolean
@@ -407,9 +409,9 @@ export function formatHms(totalSeconds: number): string {
   return `${pad(h)}:${pad(m)}:${pad(s)}`
 }
 
-/** Shared with formatHms's own reasoning: both the on-screen WYSIWYG overlay
- *  (useOverlayFieldData) and the actual burned-in recording (ffmpeg's
- *  drawtext filter, fed by LiveRecordingService rewriting a text file once a
+/** Shared with formatHms's own reasoning: both Settings' sample-data
+ *  OverlayPreview editor and the actual burned-in capture (ffmpeg's drawtext
+ *  filter, fed by PersistentCaptureService rewriting a text file once a
  *  second) format the current date/time this same way, so they can never
  *  drift from each other. */
 export function formatDateLocal(d: Date): string {
@@ -457,15 +459,15 @@ export interface SearchFilters {
 
 export interface StationRuntimeState {
   stationId: string
-  /** 'processing' covers the window between ffmpeg's live capture ending and
-   *  the recording being fully usable (decode verification, thumbnail
-   *  extraction, DB/metadata write, warehouse API enqueue all still running)
-   *  - see StationManager.stopRecording. Kept distinct from 'recording' so
-   *  the dashboard stops showing a frozen elapsed timer for work that's no
-   *  longer live. The camera's live preview is already back by this point -
-   *  it's handed back the moment ffmpeg's process exits (see
-   *  LiveRecordingService/finalizeStoppedRecording's previewResume emit),
-   *  not held frozen through the rest of this finalization work too. */
+  /** 'processing' covers the window between "stop" being requested and the
+   *  recording being fully usable (segment trim/concat, decode verification,
+   *  thumbnail extraction, DB/metadata write, warehouse API enqueue all
+   *  still running) - see StationManager.stopRecording. Kept distinct from
+   *  'recording' so the dashboard stops showing a frozen elapsed timer for
+   *  work that's no longer live. The camera's live preview is never
+   *  affected by this at all - it's continuously fed by the persistent
+   *  capture process regardless of recording/processing/idle status (see
+   *  PersistentCaptureService). */
   status: 'idle' | 'recording' | 'processing' | 'error'
   barcode: string | null
   cameraName: string | null
@@ -639,35 +641,55 @@ export interface ApiQueueStatus {
   lastSuccessAt: string | null
 }
 
-/** Recording happens entirely in the main process, via ffmpeg opening
- *  the physical camera directly (see LiveRecordingService) - this UVC camera
- *  hardware does not support two simultaneous opens (confirmed against real
- *  hardware), so the renderer's own getUserMedia preview must release the
- *  device before ffmpeg can claim it, and get it back once ffmpeg is done.
- *  This is that handshake's request half: main -> renderer, "stop your
- *  preview's video track(s) for this camera now." The renderer keeps
- *  `videoRef.current.srcObject` untouched when it does this (only
- *  `track.stop()`, never clearing `srcObject`), so the `<video>` element
- *  keeps displaying its last decoded frame - a natural "frozen preview"
- *  during recording with no extra frame-capture code needed. Acknowledged
- *  via `requestId` (see CameraPreviewReleaseAck) so the main process knows
- *  it's actually safe to spawn ffmpeg, instead of racing it. */
-export interface CameraPreviewReleaseRequest {
-  requestId: string
-  stationId: string
+/** Recording happens entirely in the main process, via a single persistent
+ *  ffmpeg process per camera that opens it exactly once (see
+ *  PersistentCaptureService) and never gives it up for as long as the
+ *  camera stays assigned+connected - camera ownership is no longer tied to
+ *  whether a recording is active. The renderer never calls getUserMedia for
+ *  an owned camera at all; instead it plays the *same* encoded H.264 stream
+ *  ffmpeg is already producing, via Media Source Extensions, so the live
+ *  preview is never interrupted by a recording starting or stopping (no
+ *  release/resume handshake exists anymore - see the incident history this
+ *  replaced: v1.6.2/v1.7.5 both tied a second preview channel's lifetime to
+ *  the recording process itself, which is what made it fragile; this
+ *  ties the capture process's lifetime to the camera being assigned+
+ *  connected, never to a specific recording). */
+export interface CaptureStatus {
   cameraId: string
+  /** Whether a persistent capture session currently owns this camera. False
+   *  means the renderer should fall back to its own getUserMedia preview
+   *  (e.g. a spare/unassigned camera being tested in Settings). */
+  active: boolean
 }
 
-/** Renderer -> main: acknowledges a CameraPreviewReleaseRequest with the same
- *  requestId once this station's preview track has actually been stopped. */
-export interface CameraPreviewReleaseAck {
-  requestId: string
+/** Fragmented-MP4 bytes for MediaSource Extensions playback of a camera's
+ *  live capture. `kind: 'init'` is the ftyp+moov header (sent once, cached,
+ *  and replayed to any renderer that starts listening after capture already
+ *  began); `kind: 'fragment'` is each subsequent moof+mdat chunk as it's
+ *  produced. Both carry raw bytes over Electron's structured-clone IPC
+ *  (no base64 - Buffers/Uint8Arrays transfer natively). */
+/** Latency-instrumentation timestamps for one fragment, all Date.now()
+ *  (wall clock) so they're comparable across the main/renderer process
+ *  boundary - performance.now() is NOT safe to compare cross-process in
+ *  Electron, since each process has its own independent epoch origin.
+ *  captureAtApprox is a best-effort approximation, not a hardware-verified
+ *  timestamp - see PersistentCaptureService's showinfo-filter comment for
+ *  exactly what it does and doesn't guarantee. There is no independently
+ *  observable "encoder finished" instant without patching ffmpeg's source
+ *  (this app uses the prebuilt ffmpeg-static binary): the encode and mux
+ *  stages are only measurable together, bounded by
+ *  captureAtApprox -> fragmentEmittedAt. */
+export interface FragmentTiming {
+  captureAtApprox: number
+  fragmentEmittedAt: number
 }
 
-/** Main -> renderer: the camera is free again (ffmpeg's process has fully
- *  exited) - safe to re-run getUserMedia and resume the live preview for
- *  this station's camera. */
-export interface CameraPreviewResumeSignal {
-  stationId: string
+export interface CaptureChunk {
   cameraId: string
+  kind: 'init' | 'fragment'
+  data: Uint8Array
+  /** Only present for kind: 'fragment' chunks produced after latency
+   *  instrumentation was added - absent for the cached init segment (not a
+   *  measured stage) and for any build predating this field. */
+  timing?: FragmentTiming
 }

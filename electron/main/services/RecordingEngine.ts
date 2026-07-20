@@ -23,17 +23,96 @@ function getNextEncoder(current: HardwareEncoder): HardwareEncoder {
   return ENCODER_PRIORITY[index + 1] ?? 'libx264'
 }
 
+/** ffmpeg encoder args for each hardware backend, tuned for live capture
+ *  (low-latency preset/tune, constant-bitrate rate control) rather than
+ *  offline quality - shared by PersistentCaptureService, the only thing
+ *  that ever opens a live camera device for encoding. Verified against real
+ *  hardware (NVENC, 1080p60) before being relied on. */
+export function buildEncoderArgs(encoder: HardwareEncoder, bitrateKbps: number): string[] {
+  const bitrate = `${bitrateKbps}k`
+  const bufsize = `${bitrateKbps * 2}k`
+  switch (encoder) {
+    case 'h264_nvenc':
+      // tune=ull ("ultra low latency", one step past ll) and an explicit
+      // zerolatency=1 ("no reordering delay") are both real, documented
+      // options on this ffmpeg build (confirmed via `ffmpeg -h
+      // encoder=h264_nvenc`) - neither was set before. preset/bufsize are
+      // deliberately left alone: preset mostly trades encode quality for
+      // GPU search-complexity time, not pipeline buffering depth, on a
+      // hardware encoder already running well within its real-time budget;
+      // -rc-lookahead already defaults to 0 (confirmed via the same -h
+      // output) so there's no lookahead buffer to disable.
+      return [
+        '-c:v',
+        'h264_nvenc',
+        '-preset',
+        'p4',
+        '-tune',
+        'ull',
+        '-zerolatency',
+        '1',
+        '-rc',
+        'cbr',
+        '-b:v',
+        bitrate,
+        '-maxrate',
+        bitrate,
+        '-bufsize',
+        bufsize
+      ]
+    case 'h264_qsv':
+      // async_depth defaults to 4 (confirmed via `ffmpeg -h
+      // encoder=h264_qsv`) - "maximum processing parallelism," i.e. up to 4
+      // frames can be in flight before a result returns, which is real
+      // pipeline latency (~4 frames) with no other latency-oriented knob set
+      // at all on this path before now. preset is already veryfast, the
+      // fastest available - no further change justified there.
+      return ['-c:v', 'h264_qsv', '-preset', 'veryfast', '-async_depth', '1', '-b:v', bitrate, '-maxrate', bitrate, '-bufsize', bufsize]
+    case 'h264_amf':
+      // -usage was never set, so this ran under AMF's generic "transcoding"
+      // profile the whole time - not any latency-oriented mode. "lowlatency"
+      // is a vendor-defined preset bundle (buffering depth, B-frame policy,
+      // etc.) built for exactly this scenario, confirmed via `ffmpeg -h
+      // encoder=h264_amf`; using it instead of hand-tuning individual AMF
+      // sub-options (-bf, -max_b_frames, ...) trusts AMD's own tuning for
+      // that combination rather than guessing at values.
+      return [
+        '-c:v',
+        'h264_amf',
+        '-quality',
+        'speed',
+        '-usage',
+        'lowlatency',
+        '-rc',
+        'cbr',
+        '-b:v',
+        bitrate,
+        '-maxrate',
+        bitrate,
+        '-bufsize',
+        bufsize
+      ]
+    case 'libx264':
+      // Software fallback only reached when no GPU encoder is usable -
+      // ultrafast + zerolatency prioritizes sustaining real-time fps over
+      // compression efficiency, and zerolatency already disables lookahead/
+      // B-frames/frame-threading delay entirely - already the most
+      // latency-optimized configuration libx264 offers, no further change
+      // justified.
+      return ['-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'zerolatency', '-b:v', bitrate, '-maxrate', bitrate, '-bufsize', bufsize]
+  }
+}
+
 /** File-based ffmpeg utilities used by the recording pipeline, plus hardware
- *  encoder detection shared by the live recording path (see
- *  LiveRecordingService). The file-based methods below (testRecording,
+ *  encoder detection shared by the live capture path (see
+ *  PersistentCaptureService). The file-based methods below (testRecording,
  *  generateThumbnail, verifyRecording) all operate on a static,
  *  already-complete input file (never a live camera device), which is what
  *  makes them safe: there is no exclusive-device contention to race, no live
  *  shutdown timing to get wrong. The live camera capture itself - opening the
- *  device, encoding in real time, and the graceful-shutdown timing that
- *  actually matters - is owned entirely by LiveRecordingService, which is
- *  also where the one ffmpeg process that *does* touch an in-progress
- *  recording lives. */
+ *  device, encoding continuously, and the graceful-shutdown timing that
+ *  actually matters - is owned entirely by PersistentCaptureService, which is
+ *  also where every ffmpeg process that touches a live camera device lives. */
 class RecordingEngine {
   private detectedEncoderPromise: Promise<HardwareEncoder> | null = null
 
@@ -57,8 +136,8 @@ class RecordingEngine {
 
   /** Moves the cached "best encoder" choice to the next one in priority
    *  order after `failedEncoder`, and returns the new choice. Called by
-   *  LiveRecordingService when an encoder that passed the one-time startup
-   *  probe above still fails to actually initialize for a real recording -
+   *  PersistentCaptureService when an encoder that passed the one-time
+   *  startup probe above still fails to actually initialize for a real capture -
    *  the probe uses bare/minimal flags, but a real recording adds
    *  encoder-specific tuning (preset/tune/rc) the probe never exercises, so
    *  a different driver state or GPU generation can still fail at that
@@ -463,7 +542,7 @@ export function summarizeFfmpegError(stderrTail: string): string {
  *  the signatures ffmpeg actually prints for each hardware encoder's own
  *  init failure, confirmed against this app's own real probing of NVENC,
  *  Quick Sync, and AMF on hardware that didn't support one or more of them.
- *  Used by LiveRecordingService to decide whether a failure should fall
+ *  Used by PersistentCaptureService to decide whether a failure should fall
  *  back to the next encoder in priority order (this) or retry the same
  *  command after a short delay (a device-busy/not-found error instead -
  *  see summarizeFfmpegError's own patterns). A false positive here just
