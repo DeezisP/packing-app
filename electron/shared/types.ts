@@ -668,28 +668,8 @@ export interface CaptureStatus {
  *  began); `kind: 'fragment'` is each subsequent moof+mdat chunk as it's
  *  produced. Both carry raw bytes over Electron's structured-clone IPC
  *  (no base64 - Buffers/Uint8Arrays transfer natively). */
-/** Latency-instrumentation timestamps for one fragment, all Date.now()
- *  (wall clock) so they're comparable across the main/renderer process
- *  boundary - performance.now() is NOT safe to compare cross-process in
- *  Electron, since each process has its own independent epoch origin.
- *  captureAtApprox is a best-effort approximation, not a hardware-verified
- *  timestamp - see PersistentCaptureService's showinfo-filter comment for
- *  exactly what it does and doesn't guarantee. There is no independently
- *  observable "encoder finished" instant without patching ffmpeg's source
- *  (this app uses the prebuilt ffmpeg-static binary): the encode and mux
- *  stages are only measurable together, bounded by
- *  captureAtApprox -> fragmentEmittedAt. */
-export interface FragmentTiming {
-  captureAtApprox: number
-  fragmentEmittedAt: number
-}
-
 export interface CaptureChunk {
   cameraId: string
   kind: 'init' | 'fragment'
   data: Uint8Array
-  /** Only present for kind: 'fragment' chunks produced after latency
-   *  instrumentation was added - absent for the cached init segment (not a
-   *  measured stage) and for any build predating this field. */
-  timing?: FragmentTiming
 }

@@ -60,7 +60,6 @@ function StationCardImpl({ station, state, cameras, isActive, hotkey, onSetActiv
         preset={{ width: preset.width, height: preset.height, fps: station.fps }}
         allowGetUserMediaFallback={false}
         configured={hasCameraConfigured}
-        showLatencyDebug
       >
         {state && !state.cameraConnected && hasCameraConfigured && (
           <div className="absolute top-2 left-2 bg-rec-600/90 text-white text-xs px-2 py-1 rounded-full">

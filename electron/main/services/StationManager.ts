@@ -26,6 +26,13 @@ import type {
 
 const TICK_INTERVAL_MS = 1000
 const SAVE_LOCATION_HEALTH_INTERVAL_MS = 10000
+/** Backoff for the tick()-driven capture self-heal (see maybeRetryCapture) -
+ *  starts quick (a transient driver hiccup should recover fast) and doubles
+ *  up to a ceiling so a camera that's genuinely gone for a long time (really
+ *  unplugged, not coming back soon) doesn't get hammered with an ffmpeg
+ *  spawn attempt every single tick indefinitely. */
+const CAPTURE_RETRY_INITIAL_MS = 3000
+const CAPTURE_RETRY_MAX_MS = 30000
 
 interface StationRuntime extends StationRuntimeState {
   dbId: number | null
@@ -68,6 +75,10 @@ class StationManager extends EventEmitter {
   private tickTimer: NodeJS.Timeout | null = null
   private saveLocationHealthTimer: NodeJS.Timeout | null = null
   private lastSaveLocationStatus: SaveLocationStatus | null = null
+  /** Per-station backoff state for the tick()-driven capture self-heal (see
+   *  maybeRetryCapture) - absent entirely means "no retry currently
+   *  outstanding," cleared on a successful reconcile. */
+  private captureRetry = new Map<string, { nextAttemptAt: number; delayMs: number }>()
   private lastValidationIssues: StationValidationIssue[] = []
 
   init(): void {
@@ -263,7 +274,23 @@ class StationManager extends EventEmitter {
     if (!current || this.getStationConfig(stationId)?.cameraId !== station.cameraId) return
 
     if (result.success) {
-      this.setState(stationId, { capturedCameraId: camera.id, cameraConnected: true, cameraName: cameraDisplayName })
+      // Clears any backoff the tick()-driven self-heal had built up for this
+      // station (see maybeRetryCapture) - a fresh session just started
+      // successfully, so the next failure (if any) should start the ramp
+      // over rather than inheriting a long-since-irrelevant delay. Also
+      // clears a stale 'error' status left over from whatever caused this
+      // station to need reconciling in the first place (a captureError
+      // event, or a previous failed retry) - without this, a station that
+      // silently self-heals would keep showing 'error' in the UI forever
+      // even though capture is working again, which defeats the point of
+      // recovering without a restart at all.
+      this.captureRetry.delete(stationId)
+      this.setState(stationId, {
+        capturedCameraId: camera.id,
+        cameraConnected: true,
+        cameraName: cameraDisplayName,
+        ...(current.status === 'error' ? { status: 'idle', lastError: null } : {})
+      })
       logger.info('Persistent capture: session ready', {
         stationId,
         cameraId: camera.id,
@@ -272,7 +299,8 @@ class StationManager extends EventEmitter {
         negotiatedHeight: negotiated.height,
         negotiatedFps: negotiated.fps,
         encoder: result.encoder,
-        hardwareAccelerated: result.encoder !== 'libx264'
+        hardwareAccelerated: result.encoder !== 'libx264',
+        recoveredFromError: current.status === 'error'
       })
     } else {
       logger.error('Persistent capture: failed to start', { stationId, cameraId: camera.id, error: result.error })
@@ -386,6 +414,7 @@ class StationManager extends EventEmitter {
       if (state && state.status !== 'recording') {
         if (state.capturedCameraId) persistentCaptureService.stop(state.capturedCameraId).catch(() => undefined)
         this.states.delete(staleId)
+        this.captureRetry.delete(staleId)
         this.emit('stationRemoved', staleId)
       }
     }
@@ -403,7 +432,51 @@ class StationManager extends EventEmitter {
           logger.error('Disk check failed', { error: (err as Error).message })
         )
       }
+      this.maybeRetryCapture(stationId, state)
     }
+  }
+
+  /** Self-heal for a persistent capture session that's gone missing without
+   *  anything else noticing. reconcileCaptureForStation is already called
+   *  from several event-driven triggers (camera list changes, config
+   *  changes, a captureError event), but none of those fire for the case
+   *  that actually needs recovering: the capture ffmpeg process dying on its
+   *  own (crash, driver fault, a momentary glitch) while the camera stays
+   *  physically connected and enumerated - cameraManager's device list never
+   *  changes, so its 'changed' event never fires, and nothing else was
+   *  watching. Before this, the only way to recover was restarting the app
+   *  (which re-runs reconcileCaptureForStation for every station fresh at
+   *  startup). Running this every tick (1s) catches that case within a few
+   *  seconds instead, without needing to hook every possible way a session
+   *  can die.
+   *
+   *  Backed off per station (not attempted every single tick) so a camera
+   *  that's genuinely gone for a while doesn't get an ffmpeg spawn attempt
+   *  every second indefinitely - see CAPTURE_RETRY_INITIAL_MS/_MAX_MS. The
+   *  backoff is cleared entirely once reconcileCaptureForStation actually
+   *  succeeds (see its success branch), so a camera that comes back quickly
+   *  recovers quickly too, not on whatever the backoff had ramped up to. */
+  private maybeRetryCapture(stationId: string, state: StationRuntime): void {
+    if (state.status === 'recording' || state.status === 'processing') return
+    const station = this.getStationConfig(stationId)
+    if (!station || !station.enabled) return
+    const camera = cameraManager.resolveStationCamera(station)
+    // No connected camera to even try - cameraManager's own 'changed' event
+    // already covers "camera reappeared," this only needs to handle "camera
+    // is right there but the session isn't."
+    if (!camera) return
+    if (persistentCaptureService.isActive(camera.id) && state.capturedCameraId === camera.id) return
+
+    const now = Date.now()
+    const retry = this.captureRetry.get(stationId)
+    if (retry && now < retry.nextAttemptAt) return
+
+    const delayMs = retry ? Math.min(retry.delayMs * 2, CAPTURE_RETRY_MAX_MS) : CAPTURE_RETRY_INITIAL_MS
+    this.captureRetry.set(stationId, { nextAttemptAt: now + delayMs, delayMs })
+
+    this.reconcileCaptureForStation(stationId).catch((err) =>
+      logger.error('Persistent capture self-heal retry failed', { stationId, error: (err as Error).message })
+    )
   }
 
   private async checkDiskDuringRecording(stationId: string): Promise<void> {

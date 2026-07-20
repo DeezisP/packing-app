@@ -8,19 +8,12 @@ import { recordingEngine, summarizeFfmpegError, isEncoderInitError, ENCODER_PRIO
 import type { HardwareEncoder } from './RecordingEngine'
 import { defaultPaths } from './PathService'
 import { buildOverlayLines, formatDateLocal, formatTimeLocal, formatHms } from '@shared/types'
-import type { OverlayConfig, FragmentTiming } from '@shared/types'
+import type { OverlayConfig } from '@shared/types'
 
 const DEVICE_OPEN_GRACE_MS = 3000
 const OPEN_DEVICE_RETRY_ATTEMPTS = 3
 const OPEN_DEVICE_RETRY_DELAY_MS = 700
 const OVERLAY_UPDATE_INTERVAL_MS = 1000
-/** Temporary, one-off toggle for the preview-latency verification pass
- *  (measuring the real effect of GOP_SECONDS + the renderer resync + the
- *  encoder tuning changes) - not meant to stay on permanently. Turn off once
- *  that verification is done; the `showinfo` filter and stderr parsing it
- *  gates are cheap but there's no reason to carry them in every production
- *  build once the numbers are in. */
-const LATENCY_INSTRUMENTATION_ENABLED = true
 const GRACEFUL_STOP_TIMEOUT_MS = 8000
 
 /** The encoder's keyframe interval. Used to be the tightest knob on preview
@@ -155,14 +148,6 @@ interface CaptureSession {
   splitter: Mp4BoxSplitter
   initSegment: Buffer | null
   stderrTail: string
-  /** Wall-clock (Date.now) moments a keyframe was reported entering the
-   *  filter graph by ffmpeg's `showinfo` filter, oldest first - see
-   *  LATENCY_INSTRUMENTATION_ENABLED. Exactly one keyframe opens each
-   *  fragment (-force_key_frames + movflags=frag_keyframe), so the oldest
-   *  entry is always the correct capture-approx match for the next fragment
-   *  to close, consumed FIFO in onFragment. */
-  pendingKeyframeTimings: number[]
-  stderrLineBuffer: string
   recordingMarker: RecordingMarker | null
   stopResolvers: Array<(result: { success: boolean; error: string | null }) => void>
   killTimer: NodeJS.Timeout | null
@@ -310,14 +295,6 @@ class PersistentCaptureService extends EventEmitter {
       writeOverlayTextFile(overlayTextPath, params.overlay, null)
       vf = buildDrawtextFilter(params.overlay.config, overlayTextPath, fontFilePath)
     }
-    // `showinfo` logs one stderr line per frame (n, pts_time, iskey) with no
-    // image processing cost - purely a latency-measurement probe, chained
-    // before any real filter so it sees a frame as early as this app can
-    // observe one (see LATENCY_INSTRUMENTATION_ENABLED and the stderr
-    // handler below, which reads it back out).
-    if (LATENCY_INSTRUMENTATION_ENABLED) {
-      vf = vf ? `showinfo,${vf}` : 'showinfo'
-    }
 
     const deviceSpec = params.micName ? `video=${params.cameraId}:audio=${params.micName}` : `video=${params.cameraId}`
     const gopSize = Math.round(params.fps * GOP_SECONDS)
@@ -326,15 +303,7 @@ class PersistentCaptureService extends EventEmitter {
     const buildArgs = (enc: HardwareEncoder): string[] => [
       '-hide_banner',
       '-loglevel',
-      // showinfo logs at AV_LOG_INFO - the normal 'warning' level silences
-      // it completely (confirmed empirically: zero showinfo lines reach
-      // stderr at 'warning', vs one per frame at 'info'), which is why
-      // pendingKeyframeTimings stayed empty and every captureAtApprox
-      // silently fell back to the Date.now() default, always exactly equal
-      // to fragmentEmittedAt. Only bumped when instrumentation is actually
-      // on - 'warning' stays correct for normal operation, where the extra
-      // per-frame noise this produces would have no purpose.
-      LATENCY_INSTRUMENTATION_ENABLED ? 'info' : 'warning',
+      'warning',
       '-stats',
       // Both real, documented input-side options (confirmed via `ffmpeg -h
       // full`), unrelated to the encoder/GOP tuning already done. Neither
@@ -516,8 +485,6 @@ class PersistentCaptureService extends EventEmitter {
         splitter: new Mp4BoxSplitter(),
         initSegment: null,
         stderrTail: '',
-        pendingKeyframeTimings: [],
-        stderrLineBuffer: '',
         recordingMarker: null,
         stopResolvers: [],
         killTimer: null
@@ -582,16 +549,7 @@ class PersistentCaptureService extends EventEmitter {
             this.emit('statusChanged', { cameraId: params.cameraId, active: true })
           },
           (fragment) => {
-            // See pendingKeyframeTimings' doc comment: exactly one keyframe
-            // opens each fragment, so the oldest pending timing is always
-            // this fragment's - undefined (not a fabricated Date.now()
-            // fallback) if instrumentation is off or the queue is
-            // unexpectedly empty, so a stats consumer can tell "not
-            // measured" apart from a real (if imperfect) measurement.
-            const timing: FragmentTiming | undefined = LATENCY_INSTRUMENTATION_ENABLED
-              ? { captureAtApprox: session.pendingKeyframeTimings.shift() ?? Date.now(), fragmentEmittedAt: Date.now() }
-              : undefined
-            this.emit('chunk', { cameraId: params.cameraId, kind: 'fragment', data: fragment, timing })
+            this.emit('chunk', { cameraId: params.cameraId, kind: 'fragment', data: fragment })
           }
         )
       })
@@ -599,35 +557,7 @@ class PersistentCaptureService extends EventEmitter {
       child.stderr?.on('data', (chunk: Buffer) => {
         const text = chunk.toString()
         if (!settled && /frame=\s*\d+/.test(text)) settleSuccess()
-
-        if (LATENCY_INSTRUMENTATION_ENABLED) {
-          // showinfo lines can straddle two stderr chunks - buffer to
-          // complete lines only, or a split `iskey:1` token could be missed
-          // (undercounting) or double-processed (overcounting) across a
-          // chunk boundary, corrupting the exact 1-keyframe-per-fragment
-          // correlation the queue depends on.
-          //
-          // -loglevel is 'info' while instrumentation is on (see buildArgs),
-          // which makes stderr far noisier than this app's normal 'warning'
-          // level - one showinfo line per frame. Those lines are kept out of
-          // stderrTail entirely (only real, potentially-error-relevant lines
-          // go in) so isEncoderInitError's failure diagnosis still has an
-          // actual error message to look at instead of per-frame noise
-          // crowding it out of the last 4000 characters right when it
-          // matters most, at startup.
-          session.stderrLineBuffer += text
-          const lines = session.stderrLineBuffer.split('\n')
-          session.stderrLineBuffer = lines.pop() ?? ''
-          for (const line of lines) {
-            if (/\biskey:1\b/.test(line)) {
-              session.pendingKeyframeTimings.push(Date.now())
-            } else {
-              session.stderrTail = (session.stderrTail + line + '\n').slice(-4000)
-            }
-          }
-        } else {
-          session.stderrTail = (session.stderrTail + text).slice(-4000)
-        }
+        session.stderrTail = (session.stderrTail + text).slice(-4000)
       })
 
       child.on('error', (err) => settleFailure(err.message, err.message))

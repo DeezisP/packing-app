@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { labelMatchesDeviceName } from '../lib/deviceMatching'
-import { LatencyStatsCollector, type LatencyStats } from '../lib/previewLatencyStats'
 import type { CameraDevice, CaptureChunk, CaptureStatus } from '../../electron/shared/types'
 
 /** Chromium redacts every device's `label` (and gives every device the same
@@ -95,48 +94,6 @@ const CATCH_UP_PLAYBACK_RATE = 1.08
  *  being absorbed by a few frames of headroom. */
 const INITIAL_LIVE_EDGE_CUSHION_SECONDS = 0.08
 
-/** Temporary, one-off toggle for the preview-latency verification pass -
- *  mirrors PersistentCaptureService's LATENCY_INSTRUMENTATION_ENABLED (must
- *  match: a mismatch just means chunk.timing is sometimes undefined, handled
- *  gracefully, not a hard dependency between the two flags). Turn off once
- *  verification is done. */
-const LATENCY_INSTRUMENTATION_ENABLED = true
-
-/** One fragment's in-flight timing record, tracked from IPC arrival through
- *  to being matched against an actually-presented video frame. */
-interface PendingTimingRecord {
-  captureAtApprox: number
-  fragmentEmittedAt: number
-  ipcReceivedAt: number
-  appendBeginAt: number | null
-  appendEndAt: number | null
-  /** sourceBuffer.buffered's live edge immediately before this fragment's
-   *  appendBuffer call - the correlation key requestVideoFrameCallback uses
-   *  to tell when THIS fragment's content has actually been presented.
-   *  Needed because MSE `mode: 'sequence'` rebases timestamps on append, so
-   *  ffmpeg's original per-frame PTS values aren't recoverable here to
-   *  match directly against `metadata.mediaTime`. */
-  bufferedEndBeforeAppend: number | null
-}
-
-export interface PreviewLatencyDebugInfo {
-  stats: LatencyStats
-  /** Total end-to-end latency of the single most recently presented sample,
-   *  in ms - "Current latency" for the debug overlay. */
-  currentTotalMs: number | null
-  /** Fragments received but not yet appended, plus fragments appended but
-   *  not yet matched to a presented frame - should stay at 0-1 in healthy
-   *  steady state; sustained growth means something downstream is falling
-   *  behind. */
-  queueDepth: number
-  bufferedDurationSeconds: number
-  liveEdgeSeconds: number
-  playbackDelaySeconds: number
-  droppedVideoFrames: number
-  totalVideoFrames: number
-  exportSamples: () => void
-}
-
 /** Attaches a camera's live feed to a `<video>` element, identified by its
  *  unique `id` (ffmpeg's DirectShow device path) rather than its friendly
  *  name - two identical camera models report the exact same
@@ -194,17 +151,11 @@ export function useCameraPreview(
    *  persistent capture session hasn't come up yet - distinct from `error`
    *  since this is an expected, usually-brief startup state, not a failure. */
   connecting: boolean
-  /** Non-null only in MSE mode once instrumentation has produced at least
-   *  one complete sample - null in getUserMedia/waiting/error states, where
-   *  none of this is measurable (or meaningful). */
-  latencyDebug: PreviewLatencyDebugInfo | null
 } {
   const ownVideoRef = useRef<HTMLVideoElement>(null)
   const videoRef = externalVideoRef ?? ownVideoRef
   const [error, setError] = useState<string | null>(null)
   const [connecting, setConnecting] = useState(false)
-  const latencyCollectorRef = useRef(new LatencyStatsCollector())
-  const [latencyDebug, setLatencyDebug] = useState<PreviewLatencyDebugInfo | null>(null)
 
   const target = cameraId ? (cameras.find((c) => c.id === cameraId) ?? null) : null
   const occurrence = target
@@ -227,9 +178,9 @@ export function useCameraPreview(
     let mediaSource: MediaSource | null = null
     let objectUrl: string | null = null
     let sourceBuffer: SourceBuffer | null = null
-    const pendingChunks: Array<{ data: Uint8Array; timing: PendingTimingRecord | null }> = []
+    let sourceBufferAbort: AbortController | null = null
+    const pendingChunks: Uint8Array[] = []
     let appending = false
-    let currentAppendTiming: PendingTimingRecord | null = null
     let catchingUp = false
     // See INITIAL_LIVE_EDGE_CUSHION_SECONDS - resyncToLiveEdge's normal
     // hard-jump threshold (MAX_LIVE_EDGE_LAG_SECONDS) is deliberately too
@@ -239,65 +190,19 @@ export function useCameraPreview(
     // first resync gets a dedicated one-time snap instead of waiting to
     // cross that threshold. False once this fires for the current session.
     let hasSnappedToLiveEdge = false
-    const awaitingPresentation: PendingTimingRecord[] = []
-    // A fresh camera attach starts a fresh measurement session rather than
-    // silently blending stats across a camera swap/reconnect.
-    latencyCollectorRef.current.clear()
-    setLatencyDebug(null)
-
-    // performance.now() has its own independent epoch per Electron process -
-    // it is NOT directly comparable between this renderer and the main
-    // process, unlike Date.now() (same OS wall clock, shared by both). This
-    // offset, captured once, lets every high-resolution performance.now()
-    // reading below be expressed on that same Date.now()-comparable clock,
-    // so renderer-side stage timings are precise (sub-ms) *and* directly
-    // comparable against the main-process timestamps carried in
-    // chunk.timing.
-    const perfToWallClockOffsetMs = Date.now() - performance.now()
-    const nowMs = (): number => performance.now() + perfToWallClockOffsetMs
-
-    function refreshLatencyDebug(): void {
-      const video = videoRef.current
-      const collector = latencyCollectorRef.current
-      if (!video || !sourceBuffer || sourceBuffer.buffered.length === 0 || collector.count() === 0) return
-      const liveEdgeSeconds = sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1)
-      const bufferedDurationSeconds = liveEdgeSeconds - sourceBuffer.buffered.start(0)
-      const quality = video.getVideoPlaybackQuality?.()
-      const latest = collector.latest()
-      setLatencyDebug({
-        stats: collector.getStats(),
-        currentTotalMs: latest ? latest.presentedAt - latest.captureAtApprox : null,
-        queueDepth: pendingChunks.length + awaitingPresentation.length,
-        bufferedDurationSeconds,
-        liveEdgeSeconds,
-        playbackDelaySeconds: liveEdgeSeconds - video.currentTime,
-        droppedVideoFrames: quality?.droppedVideoFrames ?? 0,
-        totalVideoFrames: quality?.totalVideoFrames ?? 0,
-        exportSamples: () => {
-          void window.electronAPI.diagnostics.export(collector.exportJson())
-        }
-      })
-    }
 
     function appendNext(): void {
       if (appending || !sourceBuffer || sourceBuffer.updating || pendingChunks.length === 0) return
       const next = pendingChunks.shift()!
       appending = true
-      currentAppendTiming = next.timing
-      if (currentAppendTiming) {
-        currentAppendTiming.appendBeginAt = nowMs()
-        currentAppendTiming.bufferedEndBeforeAppend =
-          sourceBuffer.buffered.length > 0 ? sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1) : 0
-      }
       try {
         // Electron's structured-clone IPC always backs this with a real
         // ArrayBuffer at runtime (never SharedArrayBuffer) - the cast is
         // only needed because TS's stricter Buffer/Uint8Array generics
         // don't know that.
-        sourceBuffer.appendBuffer(next.data as BufferSource)
+        sourceBuffer.appendBuffer(next as BufferSource)
       } catch (err) {
         appending = false
-        currentAppendTiming = null
         window.electronAPI.system.log('warn', 'Live preview: appendBuffer failed', {
           cameraId: target!.id,
           error: (err as Error).message
@@ -376,45 +281,6 @@ export function useCameraPreview(
       }
     }
 
-    /** Self-rescheduling requestVideoFrameCallback loop (it fires once per
-     *  registration, like requestAnimationFrame) - deliberately not a timer,
-     *  for the same reason nothing else in this hook uses one (see this
-     *  hook's own doc comment on Chromium suspending renderer timers).
-     *  Matches presented frames against awaitingPresentation via the
-     *  buffered-live-edge threshold each record captured at append time:
-     *  once the currently-presented frame's mediaTime has advanced past a
-     *  record's threshold, that record's fragment has definitely been
-     *  decoded and displayed. Uses metadata.presentationTime (the browser's
-     *  own compositor-reported presentation instant, on the same clock as
-     *  performance.now() in this document) rather than reading nowMs() fresh
-     *  inside the callback, which would additionally include this JS
-     *  callback's own scheduling jitter. */
-    function scheduleFrameCallback(): void {
-      const video = videoRef.current
-      if (!video || cancelled) return
-      video.requestVideoFrameCallback((_now, metadata) => {
-        if (cancelled) return
-        const presentedAtMs = metadata.presentationTime + perfToWallClockOffsetMs
-        let completedAny = false
-        while (awaitingPresentation.length > 0) {
-          const record = awaitingPresentation[0]
-          if (record.bufferedEndBeforeAppend === null || metadata.mediaTime < record.bufferedEndBeforeAppend) break
-          awaitingPresentation.shift()
-          latencyCollectorRef.current.addSample({
-            captureAtApprox: record.captureAtApprox,
-            fragmentEmittedAt: record.fragmentEmittedAt,
-            ipcReceivedAt: record.ipcReceivedAt,
-            appendBeginAt: record.appendBeginAt!,
-            appendEndAt: record.appendEndAt!,
-            presentedAt: presentedAtMs
-          })
-          completedAny = true
-        }
-        if (completedAny) refreshLatencyDebug()
-        scheduleFrameCallback()
-      })
-    }
-
     async function startMse(initSegment: Uint8Array): Promise<void> {
       const mimeType = pickSupportedMimeType()
       const video = videoRef.current
@@ -439,39 +305,52 @@ export function useCameraPreview(
       if (cancelled || mode !== 'mse') return
       sourceBuffer = mediaSource.addSourceBuffer(mimeType)
       sourceBuffer.mode = 'sequence'
-      sourceBuffer.addEventListener('updateend', () => {
-        appending = false
-        if (currentAppendTiming) {
-          currentAppendTiming.appendEndAt = nowMs()
-          awaitingPresentation.push(currentAppendTiming)
-          currentAppendTiming = null
-        }
-        trimBuffer()
-        resyncToLiveEdge()
-        applyCatchUpRate()
-        appendNext()
-      })
-      sourceBuffer.addEventListener('error', () => {
-        // A genuine demuxer/parse failure - the MediaSource is now in
-        // 'ended' state and further appends would just throw, so surface it
-        // as an error rather than silently continuing to try.
-        const message = video.error?.message ?? 'Live preview stream error'
-        window.electronAPI.system.log('warn', 'Live preview: SourceBuffer parse error', {
-          cameraId: target!.id,
-          videoError: video.error ? { code: video.error.code, message: video.error.message } : null
-        })
-        if (!cancelled) setError(message)
-      })
-      pendingChunks.push({ data: initSegment, timing: null })
+      // Removed (not just disabled) in stopMse() via this controller - a
+      // bare `sourceBuffer.onupdateend = null` looks like it detaches the
+      // listener below but does NOT: that assigns the separate `onupdateend`
+      // IDL-attribute slot, which was never used to register it in the
+      // first place (addEventListener and .onupdateend are independent
+      // mechanisms). The listener stayed attached to the old SourceBuffer
+      // object forever, so if it ever fired again after this MediaSource
+      // was superseded, it would touch a `sourceBuffer` closure variable
+      // that a *newer* transition now owns - a real contributor to the
+      // "This SourceBuffer has been removed from the parent media source"
+      // crash seen in production.
+      sourceBufferAbort = new AbortController()
+      sourceBuffer.addEventListener(
+        'updateend',
+        () => {
+          appending = false
+          trimBuffer()
+          resyncToLiveEdge()
+          applyCatchUpRate()
+          appendNext()
+        },
+        { signal: sourceBufferAbort.signal }
+      )
+      sourceBuffer.addEventListener(
+        'error',
+        () => {
+          // A genuine demuxer/parse failure - the MediaSource is now in
+          // 'ended' state and further appends would just throw, so surface it
+          // as an error rather than silently continuing to try.
+          const message = video.error?.message ?? 'Live preview stream error'
+          window.electronAPI.system.log('warn', 'Live preview: SourceBuffer parse error', {
+            cameraId: target!.id,
+            videoError: video.error ? { code: video.error.code, message: video.error.message } : null
+          })
+          if (!cancelled) setError(message)
+        },
+        { signal: sourceBufferAbort.signal }
+      )
+      pendingChunks.push(initSegment)
       appendNext()
       setError(null)
-      if (LATENCY_INSTRUMENTATION_ENABLED) scheduleFrameCallback()
     }
 
     function stopMse(): void {
-      if (sourceBuffer) {
-        sourceBuffer.onupdateend = null
-      }
+      sourceBufferAbort?.abort()
+      sourceBufferAbort = null
       if (mediaSource && mediaSource.readyState === 'open') {
         try {
           mediaSource.endOfStream()
@@ -486,10 +365,7 @@ export function useCameraPreview(
       mediaSource = null
       sourceBuffer = null
       pendingChunks.length = 0
-      awaitingPresentation.length = 0
-      currentAppendTiming = null
       appending = false
-      setLatencyDebug(null)
       // applyCatchUpRate can leave the video element's playbackRate at
       // CATCH_UP_PLAYBACK_RATE when this session ends mid-catch-up (camera
       // swap, capture going inactive) - catchingUp itself is reset for free
@@ -578,40 +454,66 @@ export function useCameraPreview(
       setError(null)
     }
 
+    // startMse/attachGetUserMedia/stopMse all mutate shared, closure-scoped
+    // state (mediaSource, sourceBuffer, objectUrl, mode) with no per-call
+    // isolation. If two transitions ever ran concurrently - confirmed: the
+    // initial attach() and an onStatusChanged event racing right at startup,
+    // exactly the "capture session comes up while attach()'s own getStatus()
+    // is still in flight" case the comment below already anticipated but
+    // didn't actually prevent - the loser's `mode !== 'mse'` guard doesn't
+    // catch it, because both transitions set mode to the same value: it can
+    // only tell "did *some* transition reach mse", not "was mine the one
+    // that did". That let a stale continuation call
+    // `mediaSource.addSourceBuffer()` on a MediaSource a newer transition
+    // had already superseded by reassigning video.src, producing a
+    // SourceBuffer whose parent MediaSource gets torn out from under it -
+    // the exact "This SourceBuffer has been removed from the parent media
+    // source" crash seen in production. Serializing every transition
+    // through this queue - never starting the next one until the previous
+    // one, including all its internal awaits, has fully finished - removes
+    // the possibility of two transitions ever touching this shared state at
+    // once, rather than patching each individual race point with more mode
+    // checks.
+    let pendingTransition: Promise<void> = Promise.resolve()
+    function enqueueTransition(fn: () => Promise<void>): void {
+      pendingTransition = pendingTransition.then(async () => {
+        if (cancelled) return
+        try {
+          await fn()
+        } catch (err) {
+          window.electronAPI.system.log('warn', 'Live preview: transition failed', {
+            cameraId: target!.id,
+            error: (err as Error).message
+          })
+        }
+      })
+    }
+
     // Registered before attach()'s own async work starts, so a capture
     // session that starts while that first getStatus() call is still in
     // flight is caught by this listener rather than lost.
     const offChunk = window.electronAPI.capture.onChunk((chunk: CaptureChunk) => {
       if (chunk.cameraId !== target!.id || mode !== 'mse') return
-      const timing: PendingTimingRecord | null =
-        LATENCY_INSTRUMENTATION_ENABLED && chunk.timing
-          ? {
-              captureAtApprox: chunk.timing.captureAtApprox,
-              fragmentEmittedAt: chunk.timing.fragmentEmittedAt,
-              ipcReceivedAt: Date.now(),
-              appendBeginAt: null,
-              appendEndAt: null,
-              bufferedEndBeforeAppend: null
-            }
-          : null
-      pendingChunks.push({ data: chunk.data, timing })
+      pendingChunks.push(chunk.data)
       appendNext()
     })
 
-    const offStatus = window.electronAPI.capture.onStatusChanged(async (status: CaptureStatus) => {
+    const offStatus = window.electronAPI.capture.onStatusChanged((status: CaptureStatus) => {
       if (status.cameraId !== target!.id || cancelled) return
-      if (status.active && mode !== 'mse') {
-        stopGetUserMedia()
-        const fresh = await window.electronAPI.capture.getStatus(target!.id)
-        if (!cancelled && fresh.active && fresh.initSegment) await startMse(fresh.initSegment)
-      } else if (!status.active && mode === 'mse') {
-        stopMse()
-        if (allowGetUserMediaFallback) {
-          await attachGetUserMedia()
-        } else {
-          waitForCapture()
+      enqueueTransition(async () => {
+        if (status.active && mode !== 'mse') {
+          stopGetUserMedia()
+          const fresh = await window.electronAPI.capture.getStatus(target!.id)
+          if (!cancelled && fresh.active && fresh.initSegment) await startMse(fresh.initSegment)
+        } else if (!status.active && mode === 'mse') {
+          stopMse()
+          if (allowGetUserMediaFallback) {
+            await attachGetUserMedia()
+          } else {
+            waitForCapture()
+          }
         }
-      }
+      })
     })
 
     async function attach(): Promise<void> {
@@ -627,7 +529,7 @@ export function useCameraPreview(
       }
     }
 
-    attach()
+    enqueueTransition(attach)
 
     return () => {
       cancelled = true
@@ -643,5 +545,5 @@ export function useCameraPreview(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target?.id, occurrence, preset?.width, preset?.height, preset?.fps, allowGetUserMediaFallback])
 
-  return { videoRef, error, connecting, latencyDebug }
+  return { videoRef, error, connecting }
 }

@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react'
 import { useCameraPreview } from '../../hooks/useCameraPreview'
-import { PreviewLatencyOverlay } from './PreviewLatencyOverlay'
 import { strings } from '../../lib/strings'
 import type { CameraDevice } from '../../../electron/shared/types'
 
@@ -35,11 +34,6 @@ interface CameraPreviewProps {
   placeholderText?: string
   className?: string
   children?: ReactNode
-  /** Shows the preview-latency verification overlay (see
-   *  PreviewLatencyOverlay) - temporary, off by default. Only ever produces
-   *  data in MSE mode (a persistent-capture-backed preview), never for a
-   *  plain getUserMedia fallback attach. */
-  showLatencyDebug?: boolean
 }
 
 /** The live <video> element wired to one specific camera device (by unique
@@ -61,10 +55,9 @@ export function CameraPreview({
   overlay,
   placeholderText,
   className,
-  children,
-  showLatencyDebug
+  children
 }: CameraPreviewProps): JSX.Element {
-  const { videoRef, error, connecting, latencyDebug } = useCameraPreview(cameraId, cameras, undefined, preset, allowGetUserMediaFallback)
+  const { videoRef, error, connecting } = useCameraPreview(cameraId, cameras, undefined, preset, allowGetUserMediaFallback)
   const isConfigured = configured ?? Boolean(cameraId)
 
   return (
@@ -87,7 +80,6 @@ export function CameraPreview({
         </div>
       )}
       {children}
-      {showLatencyDebug && latencyDebug && <PreviewLatencyOverlay debug={latencyDebug} />}
     </div>
   )
 }

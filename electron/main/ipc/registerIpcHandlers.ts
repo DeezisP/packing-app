@@ -20,7 +20,7 @@ import { resolveFfmpegPath } from '../services/FfmpegLocator'
 import { listWindowsCameras } from '../services/WindowsDeviceService'
 import { checkFileForPlayback } from '../services/MediaProtocol'
 import { API_KEY_PLACEHOLDER } from '@shared/types'
-import type { AppConfig, SearchFilters, DiagnosticsStationAssignment, LogEntry, CaptureStatus, FragmentTiming } from '@shared/types'
+import type { AppConfig, SearchFilters, DiagnosticsStationAssignment, LogEntry, CaptureStatus } from '@shared/types'
 
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -282,8 +282,8 @@ export function registerIpcHandlers(): void {
   // renderer send, no extra bookkeeping in between.
   persistentCaptureService.on(
     'chunk',
-    ({ cameraId, kind, data, timing }: { cameraId: string; kind: 'fragment'; data: Buffer; timing?: FragmentTiming }) =>
-      broadcast(IPC.captureOnChunk, { cameraId, kind, data: new Uint8Array(data), timing })
+    ({ cameraId, kind, data }: { cameraId: string; kind: 'fragment'; data: Buffer }) =>
+      broadcast(IPC.captureOnChunk, { cameraId, kind, data: new Uint8Array(data) })
   )
   persistentCaptureService.on('statusChanged', (payload: CaptureStatus) => broadcast(IPC.captureOnStatusChanged, payload))
   scannerManager.on('changed', (devices) => broadcast(IPC.scannersOnListChanged, devices))
